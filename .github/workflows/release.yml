@@ -36,6 +36,10 @@ jobs:
           cp -R skill "$staging/skill"
           cp README.md LICENSE "$staging/"
           tar -czf "ask-away-${{ github.ref_name }}.tar.gz" -C "$(dirname "$staging")" ask-away
+          # Stable-named copy: install.sh's default URL pins
+          # releases/latest/download/ask-away.tar.gz, which must exist on
+          # every release regardless of tag.
+          cp "ask-away-${{ github.ref_name }}.tar.gz" ask-away.tar.gz
 
       - name: Smoke test the packaged binary
         run: bin/ask-away --help > /dev/null
@@ -46,5 +50,6 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" \
             "ask-away-${{ github.ref_name }}.tar.gz" \
+            "ask-away.tar.gz" \
             --title "${{ github.ref_name }}" \
             --generate-notes
