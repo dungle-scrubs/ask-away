@@ -274,7 +274,7 @@ stroke, shadow shape (see §10).
   single invocation.
 - **Beep (amended §14):** audio only, unrelated to the drain line. With
   attention on (§14), the beep plays at the first attention evaluation -
-  within **1s** of appear - as a single beep (PRESENT or UNKNOWN) or the
+  within **1s** of appear - as a single beep (VISIBLE or UNKNOWN) or the
   escalation triple (ABSENT); `--no-beep` suppresses every pattern. With
   `--no-attention`, one `NSSound.beep()` at the moment the panel appears,
   exactly as v0.2.0. The line, ramp, and timing are identical either way. In
@@ -504,20 +504,23 @@ readable:
   the seconds text - never the title, the step indicator, or the body - so
   §12's step transition fires exactly once per step change regardless of a
   running bound.
-- **Attention probes (§14).** Identification reads the own-process
-  environment (the panel inherits the asking agent's env), so an
-  SSH-launched panel usually carries no `TERM_PROGRAM` and its ancestor walk
-  dead-ends at `sshd`: attention runs in the UNKNOWN rows and the panel
-  behaves exactly as v0.2.0. A CI session has no GUI at all - same UNKNOWN
-  result, and **no crash**: every probe is failure-wrapped. A nil
-  `frontmostApplication` reads as not frontmost; a failed idle read skips
-  the tick; a failed display read reads awake; a failed or timed-out probe
-  yields no signal. Probes never block the main thread on I/O: the tmux
-  probe spawns a subprocess off-main with a **2s** kill budget; the rest are
-  in-process calls.
-- **Attention permissions.** `CGEventSource.secondsSinceLastEventType` reads
-  system idle time; it is not an event tap and needs no Accessibility or
-  Input Monitoring permission. `NSWorkspace.frontmostApplication` likewise.
+- **Attention probes (§14).** The identification walk and the visibility
+  query are in-process; every probe is failure-wrapped and **no crash** is the
+  standing rule. A panel whose ancestry dead-ends at a non-GUI process
+  (`sshd`, `launchd`, a CI runner) resolves UNKNOWN and the panel behaves
+  exactly as v0.2.0 (measured shape: a launchd-spawned probe's walk terminated
+  after one hop). A failed or timed-out probe yields no signal; a failed
+  visibility read skips the tick; a failed display read reads awake. The tmux
+  client probe spawns a subprocess off-main with a **2s** kill budget. The
+  identification walk runs once per invocation and is cached; only the
+  visibility query re-runs on the tick.
+- **Attention permissions.** `CGWindowListCopyWindowInfo` needs no Screen
+  Recording permission for the fields the visible test reads: owner pid,
+  bounds, and layer are ungated; only `kCGWindowName` (window titles) is
+  TCC-gated, and the probe never reads it (measured from an ungranted
+  context: 15/15 owner pids and bounds, 0/15 names). The demoted secondary
+  signals (`NSWorkspace.frontmostApplication`,
+  `CGEventSource.secondsSinceLastEventType`) are likewise permissionless.
   (The posted-event test driver's Accessibility grant belongs to the calling
   terminal, unchanged.)
 - **Attention activation.** Escalation is the only activation: the process
@@ -849,85 +852,147 @@ and discards the text. Same stdout contract, no new exit codes.
 
 ## 14. Attention-aware escalation (amends §6 beep, §10 notes, §12 batch)
 
-The panel escalates only when the evidence says the human is not looking.
+The trigger is **visibility of the hosting runtime's window**, not focus. The
+panel escalates only when the evidence says the human cannot see the question:
+the GUI application hosting the asking agent owns no on-screen window, the
+multiplexer client is detached, or the display is hard-absent. Agent-agnostic
+by construction: no per-agent identification, no registry - the app answers
+one question only, "is whatever runtime the agent sits inside of out of
+view?" The identified host is whatever it is: a terminal emulator, the ChatGPT
+desktop app, Cursor, Zed, an IDE.
+
 One unforgivable failure: stealing focus on a wrong guess. UNKNOWN therefore
 never escalates, escalation requires the ABSENT state - a truth-table row at
 a tick, never a judgment call - and every threshold is a named constant.
 Attention changes WHEN the human is pulled to the panel, never WHAT is
 answered: no new exit codes, no new stdout, outcomes byte-identical.
 
-**Identification.** Name the GUI terminal this session runs in, so
-"frontmost" has a target. Read the own-process environment (the panel
-inherits the asking agent's env): `TERM_PROGRAM` names the terminal,
-`TMUX` / `ZELLIJ` / `STY` / `HERDR_ENV` mark a multiplexer. When the env
-yields no terminal, walk the ancestor process chain (sysctl
-`KERN_PROC_PID` ppid walk from `getpid()`): resolve each pid's bundle id via
-`NSRunningApplication(processIdentifier:)`; the first pid whose bundle id is
-in the known-terminal table wins - the innermost terminal hosts the pane.
-Non-GUI ancestors resolve nil and the walk continues. **Env wins:** when
-both sources answer, the env claim is used and the walk is not run; the
-walk only fills gaps. Unknown terminals are legal: no claim and no known
-ancestor leaves the panel unidentified - it renders and answers normally,
-and attention falls back to the UNKNOWN rows.
+**Identification - the hosting GUI application.** Walk the ancestor process
+chain (sysctl `KERN_PROC_PID` ppid walk from `getpid()`, capped at
+`MAX_ANCESTOR_HOPS`). The first ancestor that is a GUI application is the
+host. A GUI application means all three:
 
-| `TERM_PROGRAM` | Bundle id (named table `TERMINALS`) |
-| --- | --- |
-| `Apple_Terminal` | `com.apple.Terminal` |
-| `iTerm.app` | `com.googlecode.iterm2` |
-| `ghostty` | `com.mitchellh.ghostty` |
-| `WezTerm` | `com.github.wez.wezterm` |
-| `vscode` | `com.microsoft.VSCode` |
+- `NSRunningApplication(processIdentifier:)` resolves;
+- `activationPolicy == .regular` - LSUIElement (`.accessory`) menu-bar apps,
+  background services, and `.prohibited` non-app processes are walked past;
+- the process owns at least one window: a full (non-`onScreenOnly`)
+  `CGWindowListCopyWindowInfo` filtered by owner pid contains an entry at
+  `HOSTING_WINDOW_LAYER`.
 
-**Multiplexer attach.**
+Shells, runtimes, node processes, `sshd`, `login`, launchd: all resolve no
+claim and the walk continues. Measured on the reference machine: an agent in
+a Herdr pane resolves Ghostty at hop 10 (through the Herdr service and two
+shells), and an agent runtime's node processes carry nil bundle ids with
+policy `.prohibited` - the policy + window-ownership test identifies a host
+where a name or bundle-id table would fail. **No terminal-name table, no
+`TERM_PROGRAM` consultation, and no bundle-id matching exist in this
+model**: identification is structural, so a hosting app that ships tomorrow
+is covered with no spec change.
 
-- **tmux** (`TMUX` set): run `tmux display -p '#{client_attached}'` with the
-  inherited env, no `-t`. Parse qualified by exit status: exit 0 + stdout
-  `1` = attached; exit 0 + **empty stdout = detached**; any other output,
-  non-zero exit, or spawn failure = no signal. The empty-means-detached rule
-  is measured (tmux 3.7 prints an empty value for a detached pane, never
-  `0`) - a naive `!= 1` parse would misread probe failure as absence.
-- **Herdr** (`HERDR_ENV` set): no attach probe in v1 - the CLI exposes pane
-  focus but no client-attach state. Herdr behaves like a non-multiplexer:
-  the env only marks identification.
-- **zellij / screen** (`ZELLIJ` / `STY`): detection only, no attach probe in
-  v1 - identified-but-unknown attach; rules fall through to focus + idle.
+If the walk finds no GUI application, apply the multiplexer refinement below.
+If that also fails, the host is unidentified: **UNKNOWN** - the panel renders
+and answers normally and never escalates.
+
+**Multiplexer refinement.** The agent's ancestry may pass through a
+multiplexer SERVER that has no GUI ancestor (a tmux server daemonizes under
+launchd; a headless Herdr service boots under launchd). When the environment
+marks a multiplexer (`TMUX` / `HERDR_ENV` / `ZELLIJ` / `STY`) and the walk
+finds no GUI application, the hosting app is the attached client's terminal:
+
+- **tmux.** The pane env carries the socket path and session. Resolution
+  steps, in order: (1) run `tmux -S <socket> list-clients -t <session>` with
+  the inherited env; (2) parse exit-qualified: exit 0 + one or more client
+  lines = attached; exit 0 + **empty stdout = detached** (measured: 0 bytes,
+  exit 0; the alternative probe `display -p '#{client_attached}'` prints an
+  empty value for a detached pane, never `0` - a naive `!= 1` parse would
+  misread probe failure as absence); anything else = no signal; (3) take each
+  attached client's tty from the leading `/dev/ttysNNN:` field of its
+  `list-clients` line; (4) find the client process: scan `KERN_PROC_ALL` for
+  the process whose controlling terminal is that tty (measured: exactly one
+  match, the `tmux attach` client - pane processes never carry the client's
+  tty, they hang off the server's PTYs); (5) walk that client's ancestor
+  chain with the same GUI-application rule as above (measured: tmux client ->
+  script -> runtime -> shells -> ghostty, hop 10). Multiple clients on one
+  session: every client's resolved app joins the hosting set; VISIBLE if any
+  of them owns an on-screen window, UNKNOWN if none resolves.
+- **Herdr.** Probed (v0.7.5, protocol 17): the CLI exposes pane-level focus
+  and a server-side pane tty but no attached-client or client-tty query - the
+  API schema's `no_foreground_client` exists only as a notification and
+  window-title reason, proving the server tracks client presence internally
+  without exposing it. When the Herdr server was launched from a terminal,
+  the ordinary walk still finds that terminal (measured: ghostty, hop 10) and
+  it is used as the host, whatever it now shows. When the walk finds nothing
+  - a headless server under launchd - Herdr resolves **UNKNOWN** in v1. A
+  future CLI client query (the `no_foreground_client` reason is the hook)
+  upgrades this to a detach probe without touching any other rule.
+- **zellij / screen** (`ZELLIJ` / `STY`): detection only, no client
+  resolution in v1 - no GUI ancestor resolves **UNKNOWN**.
+
+A detached multiplexer client is high-confidence ABSENT regardless of
+everything else (tmux in v1; signals table row 3).
 
 **Signals.** All local, all permissionless:
 
 | # | Signal | Mechanism | On failure |
 | --- | --- | --- | --- |
-| 1 | Terminal identification | env table + `KERN_PROC_PID` walk above | unidentified |
-| 2 | Multiplexer attach | tmux probe above (only when `TMUX` set) | no signal |
-| 3 | Focus | `NSWorkspace.shared.frontmostApplication?.bundleIdentifier ==` identified bundle id | not frontmost |
-| 4 | Presence | `CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)` - system-wide input idle seconds | skip the tick |
-| 5 | Hard absence | `CGDisplayIsAsleep(CGMainDisplayID()) != 0`, or `NSWorkspace.shared.runningApplications` contains bundle id `com.apple.screensaver` | reads awake |
+| 1 | Hosting identification | ancestry walk + multiplexer refinement above | unidentified |
+| 2 | Hosting visibility | `CGWindowListCopyWindowInfo([.onScreenOnly, .excludeDesktopElements])`: count entries whose owner pid is the hosting app (or one of its child helper processes) with `kCGWindowLayer == HOSTING_WINDOW_LAYER` and both `kCGWindowBounds` dimensions >= `MIN_ONSCREEN_WINDOW_DIMENSION_PTS` | no signal: skip the tick |
+| 3 | Multiplexer client attach | tmux `list-clients` parse above (only when `TMUX` set); detached is ABSENT, not UNKNOWN | no signal |
+| 4 | Hard absence | `CGDisplayIsAsleep(CGMainDisplayID()) != 0`, or `NSWorkspace.shared.runningApplications` contains bundle id `com.apple.screensaver` | reads awake |
 
-Signal 4 measures physical input across the whole login session. A busy
-agent injects no HID events, so agent work cannot fake presence (measured:
-9.2s idle reported mid-agent-work). Signal 5 needs no other input: display
-asleep or screensaver running is absence, full stop.
+Signal 2 is the primary. One query covers the current Space on every display:
+a minimized window drops out (measured) and a window on another native Space
+drops out (measured: moving one window to its own fullscreen Space drove every
+other application's on-screen count to 0 and back). `kCGWindowName` is never
+read - it is the only Screen-Recording-gated field; owner pid and bounds are
+ungated (measured from an ungranted context: 15/15 pids and bounds, 0/15
+names).
+
+**Secondary signals, demoted.** Focus
+(`NSWorkspace.shared.frontmostApplication`) and input idle
+(`CGEventSource.secondsSinceLastEventType`) do not appear in the truth table
+and never trigger escalation. Visible-but-unfocused must not escalate - the
+agent pane on the left, the browser focused on the right, is a human who can
+see the question where it appeared - and under the visibility model that case
+is simply VISIBLE: the panel stays quiet and non-activating. The two signals
+are reserved for beep-policy refinement or future tuning only; they remain
+permissionless (not an event tap, no Accessibility).
+
+**Modeled limitations (deliberate, safe direction - they can only suppress
+escalation, never cause it):**
+
+- A window fully occluded behind other windows still counts as visible
+  (measured). No escalation - the human may be reading it through the stack.
+- A window positioned outside the visible frame still counts as visible
+  (measured: windows parked off-edge by simulated workspace managers report
+  on-screen with their off-frame bounds). Safe direction.
+- On-screen covers current Spaces and all displays in one query; there is no
+  per-display visibility grading in v1.
+- Herdr stale launch: a server started from terminal A whose client later
+  moved elsewhere (or closed) can still resolve A while A owns windows. The
+  miss is bounded - a plausible viewing surface exists - and v1 accepts it
+  until a client query ships.
 
 **States (truth table, precedence-ordered).** Evaluate top to bottom each
 tick; the first matching row is the state.
 
-| Row | Asleep / screensaver | Attach probe | Frontmost = identified | Input idle | State |
-| --- | --- | --- | --- | --- | --- |
-| 1 | true | any | any | any | **ABSENT** |
-| 2 | false | detached | any | any | **ABSENT** |
-| 3 | false | attached / unknown | yes | any | **PRESENT** |
-| 4 | false | any | any | < 3s | **PRESENT** |
-| 5 | false | attached / unknown | no | >= absent-after | **ABSENT** |
-| 6 | every remaining combination | | | | **UNKNOWN** |
+| Row | Condition | State |
+| --- | --- | --- |
+| 1 | Display asleep or screensaver running | **ABSENT** |
+| 2 | Multiplexer client detached (tmux in v1) | **ABSENT** |
+| 3 | Hosting app identified and owns >= 1 on-screen window | **VISIBLE** |
+| 4 | Hosting app identified and owns 0 on-screen windows, held continuously for `--absent-after` seconds | **ABSENT** |
+| 5 | Everything else: no GUI ancestor, a multiplexer client that is attached but unresolvable, failed reads, and row 4's hold still accruing | **UNKNOWN** |
 
-- Row 2 outranks row 3 by decision: a detached tmux client means the asking
-  agent's own surface is not being watched, even if the physical terminal is
-  frontmost; the human re-attaches to answer.
-- Row 4 is the reflex catch: input anywhere in the last 3 seconds means
-  hands on the machine, whatever is frontmost.
-- Row 6 collects every ambiguous remainder: unidentified terminal (SSH
-  launch, CI, unknown app), not-frontmost with idle between the constants,
-  a failed focus read. **UNKNOWN is treated as PRESENT for escalation** -
-  it never activates, never raises the level, never triple-beeps.
+- Row 4's hold is the gesture filter: Space switches and Mission Control
+  sweeps flash a window out of the on-screen set for well under a second, so
+  only sustained absence qualifies. Any on-screen window tick resets the
+  accrual. While the hold accrues the state is UNKNOWN - a flicker never
+  trips the table.
+- UNKNOWN is treated as VISIBLE for escalation: it never activates, never
+  raises the level, never triple-beeps.
+- Row 3 is not a guess about eyeballs: an on-screen window is window-server
+  truth, and visible-but-unfocused is exactly the case that must stay quiet.
 
 **Escalation.** The one place the non-activating design (§10) is ever
 overridden. Preconditions: state ABSENT - never UNKNOWN. Sequence, in order,
@@ -937,9 +1002,9 @@ on the main thread:
 2. `panel.makeKeyAndOrderFront(nil)`
 3. `panel.level = .screenSaver` - stays for the invocation's lifetime,
    never downgraded
-4. Triple beep: three `NSSound.beep()` calls 0.25s apart
+4. Triple beep: three `NSSound.beep()` calls `BEEP_GAP_SECONDS` apart
 
-Fires once per invocation and **stays fired**: a later PRESENT re-attaches
+Fires once per invocation and **stays fired**: a later VISIBLE re-attaches
 no cancel, replays no beep, and never hands key or level back - the panel is
 already in the human's face; answer or close it. Parallel invocations (§9)
 each run the detector; concurrent escalations stack at the raised level and
@@ -948,16 +1013,19 @@ the most recent holds key.
 **Timing.**
 
 - Panel appear is never delayed (§10). The first evaluation lands within
-  **1s** of appear and carries the appear beep (§6).
-- ABSENT at the first evaluation escalates **immediately**;
-  `--interrupt-after` does not delay the launch case - the absence predates
-  the question. A caller who wants that case deferred raises
-  `--absent-after` instead (a higher threshold keeps the launch state in
-  row 4/6 until the idle truly accumulates).
-- Mid-flight: re-evaluate every **1s**. ABSENT must hold on consecutive
-  ticks for `--interrupt-after` seconds (default 0: the first ABSENT tick
-  escalates; N = N consecutive ABSENT ticks). Any non-ABSENT tick cancels
-  the pending hold. Fire on the tick that completes the hold.
+  `FIRST_EVALUATION_DEADLINE_SECONDS` of appear and carries the appear beep
+  (§6).
+- ABSENT at the first evaluation escalates **immediately** - rows 1 and 2 are
+  the only rows that can be ABSENT that early (row 4 needs `--absent-after`
+  seconds of accrual by construction), which is the launch case where the
+  absence provably predates the question: a detached client, a sleeping
+  display, an active screensaver. `--interrupt-after` does not delay the
+  launch case.
+- Mid-flight: re-evaluate every `ATTENTION_TICK_SECONDS`. Confirmed ABSENT
+  must hold on consecutive ticks for `--interrupt-after` seconds (default 0:
+  the first ABSENT tick escalates; N = N consecutive ABSENT ticks). Any
+  non-ABSENT tick cancels the pending hold and, for row 4, resets the
+  visibility accrual.
 - Escalation never touches the give-up bound: `--give-up-after` keeps
   draining; a panel whose human never returns still gives up (§6) and
   prints `GAVE-UP`.
@@ -966,21 +1034,30 @@ the most recent holds key.
 
 | State at first evaluation | Beep |
 | --- | --- |
-| PRESENT | single, as today |
+| VISIBLE | single, as today |
 | UNKNOWN | single |
 | ABSENT | triple, as part of the escalation |
 
-`--no-beep` silences all of it; the escalation's other three steps still
-run. In a sequence the policy is evaluated once at sequence start, never per
-step (§12).
+`--no-beep` silences all of it; the escalation's other three steps still run.
+In a sequence the policy is evaluated once at sequence start, never per step
+(§12).
+
+**SSH and other headless launches (explicit).** A panel shown on machine B's
+display by an agent running over SSH from machine A resolves **UNKNOWN on B**
+unless its ancestry happens to be local: the walk from the panel's parent
+hits `sshd` or launchd, no GUI application and no multiplexer client
+resolves, and the UNKNOWN rows apply - no escalation, standard single beep,
+exactly v0.2.0 behavior. Same for CI and cloud-spawned panels. That is the
+safe default: a machine about which the agent can prove nothing is a machine
+it never interrupts.
 
 **CLI (additive).**
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | - | on | Detection + escalation run unless disabled |
-| `--interrupt-after SECONDS` | 0 | Mid-flight ABSENT hold before escalation; 0 = immediately on ABSENT |
-| `--absent-after SECONDS` | 20 | Idle-seconds threshold for truth-table row 5 |
+| `--interrupt-after SECONDS` | 0 | Mid-flight ABSENT hold before escalation; 0 = immediately on confirmed ABSENT |
+| `--absent-after SECONDS` | 20 | Seconds of zero on-screen hosting windows before visibility absence qualifies as ABSENT (the gesture filter) |
 | `--no-attention` | off | No detection, no escalation: panel behaves exactly as v0.2.0 |
 
 - `SECONDS` takes non-negative integers; violations are usage errors (exit
@@ -1000,46 +1077,63 @@ step (§12).
 
 | Constant | Value | Role |
 | --- | --- | --- |
-| `PRESENT_IDLE_MAX_SECONDS` | 3 | Row 4 fresh-input window |
-| `ABSENT_AFTER_DEFAULT_SECONDS` | 20 | Row 5 idle threshold (flag default) |
+| `ABSENT_AFTER_DEFAULT_SECONDS` | 20 | Row 4 visibility-absent hold (flag default) |
 | `INTERRUPT_AFTER_DEFAULT_SECONDS` | 0 | Mid-flight ABSENT hold (flag default) |
 | `ATTENTION_TICK_SECONDS` | 1 | Detection cadence |
 | `FIRST_EVALUATION_DEADLINE_SECONDS` | 1 | First evaluation after appear |
 | `BEEP_GAP_SECONDS` | 0.25 | Triple-beep spacing |
 | `MAX_ANCESTOR_HOPS` | 32 | Identification walk cap |
-| `TMUX_PROBE_TIMEOUT_SECONDS` | 2 | Attach probe subprocess budget |
+| `MULTIPLEXER_PROBE_TIMEOUT_SECONDS` | 2 | tmux client-probe subprocess budget |
+| `HOSTING_WINDOW_LAYER` | 0 | The window layer that counts as a normal window |
+| `MIN_ONSCREEN_WINDOW_DIMENSION_PTS` | 1 | Minimum width and height of a counting window |
+
+`PRESENT_IDLE_MAX_SECONDS` from the focus-primary model is retired with that
+model; `TMUX_PROBE_TIMEOUT_SECONDS` is renamed
+`MULTIPLEXER_PROBE_TIMEOUT_SECONDS` (same value, broader scope).
 
 **What the implementer cannot verify headlessly.** The implementation is
 delegated to a worker with no screen. The worker CAN verify offline: flag
 parsing, defaults, and conflicts (exit 1 cases); `--help` text;
 `--no-attention` equivalence to v0.2.0 through the existing behavioral and
-posted-event suites; the tmux probe's parse against a scripted detached
-session; and that all probes return rather than crash without a GUI
-session. The worker CANNOT verify live focus, real idle, or sleep state -
-these need a human at the display:
+posted-event suites; the identification walk against synthetic pid chains
+(GUI app found at depth, no GUI app -> UNKNOWN, multiplexer branch entered on
+env markers); the tmux probe's parse against a scripted detached session
+(exit 0 + empty stdout) and an attached session (tty line -> client pid ->
+ancestor chain); and that all probes return rather than crash without a GUI
+session. The worker CANNOT verify live visibility behavior - these need a
+human at the display:
 
-1. **Present:** with the terminal frontmost, ask and keep working - single
-   beep, no activation, host app keeps focus.
-2. **Absent:** switch to another app, hands off (`--absent-after 5` to
-   shorten) - panel activates, sits above everything, triple-beeps; answer
-   it while escalated.
-3. **Stays fired:** after escalation, click back to the terminal - the
-   panel keeps its level and key status and still answers normally.
-4. **Hold then cancel:** `--interrupt-after 10 --absent-after 5` - go away
-   ~6s, return before 10s - no activation happened.
-5. **Detach:** inside tmux, ask, detach (prefix `d`), `--absent-after 5` -
-   escalation follows within ~1.5s of the detach even with the terminal
-   frontmost; reattach and answer.
-6. **Hard absence:** start the screensaver (or let the display sleep) with
-   a panel open - escalation; on wake the panel is frontmost at the raised
-   level. This run also confirms the `com.apple.screensaver` process check
-   on this macOS.
-7. **Unknown shape:** run the panel from an IDE task runner or remote shell
-   with no GUI terminal ancestor - panel appears, single beep, never
-   escalates for the whole bound (leave the machine idle past
-   `--absent-after`).
-8. **`--no-attention`:** repeat scenario 2 - single beep, no activation,
+1. **Visible:** with the hosting window on screen while another app is
+   focused (work in the browser, panel's host visible beside it): single
+   beep, no activation, ever, for the whole bound.
+2. **Other Space:** switch Space away from the hosting window
+   (`--absent-after 5`): escalation follows after the hold; switch back
+   before the hold completes: nothing. (A real hand on ctrl-arrow is required
+   here: synthetic arrow events are swallowed by this machine's input
+   remaps.)
+3. **Minimized:** `cmd-M` the hosting window: escalation after the hold;
+   un-minimize before it fires cancels the pending escalation.
+4. **Occluded:** fully cover the hosting window with another app's window:
+   no escalation, ever - deliberate, safe direction.
+5. **Detach:** inside tmux, ask, detach (prefix `d`): escalation within
+   ~1.5s of the detach even with the terminal visible and focused; reattach
+   and answer.
+6. **Hard absence:** start the screensaver (or let the display sleep) with a
+   panel open: immediate escalation; on wake the panel is frontmost at the
+   raised level. This run also confirms the `com.apple.screensaver` process
+   check on this macOS.
+7. **Unknown shape:** SSH in from another machine and run the panel there:
+   single beep, never escalates for the whole bound (leave the machine alone
+   past `--absent-after`).
+8. **`--no-attention`:** repeat scenario 2: single beep, no activation,
    v0.2.0 behavior.
+9. **Herdr:** ask from a Herdr pane whose server was launched from a visible
+   terminal: no escalation while that terminal shows a window (v1 resolves
+   it as the host). Then confirm the documented v1 miss reads as acceptable:
+   close the Herdr client, keep the terminal open and visible - no escalation
+   fires (limitation, not a bug).
+
+---
 
 ---
 
@@ -1058,4 +1152,8 @@ caller brief; machine-made calls in ledger rows D25-D27, contrast
 arithmetic in `.scratch/ask-away-fieldamend/contrast.py` (git-ignored). The
 attention-aware-escalation amendment (§14) was authored 2026-10-04 by
 design-agent against a fixed caller brief; machine-made calls in ledger rows
-D28-D30, signal probes in `.scratch/ask-away-attention/` (git-ignored).
+D28-D30, signal probes in `.scratch/ask-away-attention/` (git-ignored). The
+§14 hosting-visibility rewrite was authored 2026-10-04 by design-agent after
+the owner redirected the trigger from frontmost focus to window visibility;
+machine-made calls in ledger rows D31-D34, live probes in
+`.scratch/ask-away-visibility/` (git-ignored).

@@ -61,23 +61,28 @@ UI. Keep answers already collected in a batch.
 
 ## Attention
 
-The native panel escalates when it is confident the human is away: the
-launch terminal is not frontmost and the machine has seen no input for a
-while (`--absent-after`, default 20s), the tmux session is detached, or the
-display is asleep. Escalation activates ask-away, pulls the panel above
-everything, and triple-beeps - immediately at launch if the human is
-already away, otherwise once "away" holds for `--interrupt-after` seconds
-(default 0). What an agent can rely on:
+The native panel escalates when the human provably cannot see the question:
+the GUI application hosting the agent owns no on-screen window (other Space,
+minimized - held for `--absent-after`, default 20s, so Space-switch gestures
+never trip it), the tmux session is detached, or the display is asleep.
+Visible-but-unfocused never escalates: while the question is on screen the
+panel stays quiet. Escalation activates ask-away, pulls the panel above
+everything, and triple-beeps - immediately at launch when the absence is
+already provable (detached client, sleeping display), otherwise once
+"away" holds for `--interrupt-after` seconds (default 0). What an agent can
+rely on:
 
 - A panel left unanswered while the human is away forces itself on them.
   No re-polling, no re-asking in a loop; ask once and wait on stdout.
-- Ambiguous conditions - SSH, unknown terminals, unreadable focus - count
-  as present and never steal focus. Escalation only fires on high
-  confidence.
+- Ambiguous conditions - SSH, no local GUI ancestor, a multiplexer client
+  that cannot be resolved - count as visible and never steal focus.
+  Escalation only fires on proven absence.
 - `CLOSED` still means what it always meant: the human dismissed the panel
   deliberately; take it back to chat.
 - `--no-attention` turns detection and escalation off - use it for tests,
-  CI, and any context where focus must not move.
+  CI, and any context where focus must not move. Escalation needs the host
+  window provably absent; a window merely hidden behind others does not
+  qualify.
 - The AppleScript fallback has no attention model and ignores the flags.
 
 ## Body text scope (markdown)
