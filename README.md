@@ -6,6 +6,8 @@ One process, one question (or a whole sequence), one outcome. The agent invokes 
 
 ![The ask-away panel](docs/panel.png)
 
+Bold, italic, inline code, a striped blockquote, a labeled fence chip, list markers, and an accent-underlined link, with a filled default button and a mid-drain deadline.
+
 ## Why
 
 Agents block on questions. Terminal-based prompts go unseen the moment the human switches apps, and `osascript` dialogs look and behave like system dialogs owned by nobody. ask-away is a piece of the agent harness rendered where the human is:
@@ -75,6 +77,10 @@ Single-question output:
 
 ## Question sequences (batch mode)
 
+![Batch mode in the ask-away panel](docs/batch.png)
+
+Batch mode - `--questions-file`, step indicator, per-step bounds.
+
 A questions file walks the human through several questions in one fixed-frame panel; content crossfades between steps and the step indicator reads `2/3` at the upper right and a separate countdown reads `42s` at the lower left:
 
 ```json
@@ -121,6 +127,10 @@ Batch output codes:
 | error on stderr, nothing on stdout | 1 | usage, unreadable path, malformed JSON, or validation |
 
 ## Behavior
+
+![Parallel ask-away panels cascading](docs/cascade.png)
+
+Parallel invocations cascade; one process per question.
 
 - Appears on the screen holding the pointer, horizontally centered, slightly above center; never repositions automatically. Drag the panel by its background.
 - Cascades +24pt down-right per concurrent panel (wraps after 6) so parallel agents stay readable.
