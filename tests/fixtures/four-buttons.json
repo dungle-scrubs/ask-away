@@ -1,0 +1,7 @@
+{
+  "questions": [
+    {"title": "release: action", "text": "The 4-button row wraps to two right-aligned rows.", "buttons": ["Ship it to staging", "Roll back the release", "Hold the release train", "Page the on-call"], "default": 4},
+    {"title": "release: confirm", "text": "Confirm?", "buttons": ["No", "Yes"], "default": 2},
+    {"title": "release: note", "text": "Note it?", "buttons": ["Skip", "Note"], "default": 2}
+  ]
+}

@@ -1,11 +1,24 @@
 import Foundation
 
-/// The parsed invocation: everything ask-away needs to draw one question.
+/// The parsed invocation: one single question from flags, or a sequence of
+/// questions from a §12 questions file.
 ///
-/// Flag surface is identical to the predecessor renderer
-/// (ask-on-screen/scripts/ask.sh): --title, --text, --buttons B1 [B2] [B3],
-/// --default N (1-based, default = last button), --give-up-after SECONDS,
-/// --no-beep. Any parse failure is a usage error: message on stderr, exit 1.
+/// Flag surface for single questions is identical to the predecessor
+/// renderer (ask-on-screen/scripts/ask.sh): --title, --text, --buttons
+/// B1 [B2] [B3], --default N (1-based, default = last button),
+/// --give-up-after SECONDS, --no-beep. Any parse failure is a usage error:
+/// message on stderr, exit 1.
+///
+/// `--questions-file PATH` ('-' reads stdin) is mutually exclusive with every
+/// single-question flag; any co-presence is a usage error naming the
+/// conflict, never silent precedence (decision D12).
+enum Invocation {
+    case single(Question)
+    case batch([Question])
+}
+
+/// One question: single mode parses it from flags; batch mode builds it
+/// from a validated questions-file entry. Both draw identically.
 struct Question {
     let title: String
     let text: String
@@ -25,6 +38,10 @@ struct Question {
         case badButtonCount(Int)
         case badDefault(String, count: Int)
         case badGiveUpAfter(String)
+        case conflict(with: String, flag: String)
+        /// A questions-file load or validation failure; the message is the
+        /// SequenceFile error text (spec section 12 wording).
+        case documentError(String)
 
         var description: String {
             switch self {
@@ -40,21 +57,27 @@ struct Question {
                 return "--default must be 1..\(count), got \(value)"
             case let .badGiveUpAfter(value):
                 return "--give-up-after must be a number of seconds >= 0, got \(value)"
+            case let .conflict(with, flag):
+                return "\(with) cannot be combined with \(flag)"
+            case let .documentError(message):
+                return message
             }
         }
     }
 
     static let usage = """
-    ask-away - put one decision on the user's screen, get the answer back on stdout.
+    ask-away - put a decision on the user's screen, get the answer back on stdout.
 
     Usage:
       ask-away --title TITLE --text TEXT --buttons B1 [B2] [B3]
                [--default N] [--give-up-after SECONDS] [--no-beep]
+      ask-away --questions-file PATH
 
-    Flags:
+    Single-question flags:
       --title TITLE          One line: "repo-name: what this decides".
-      --text TEXT            One or two sentences. Inline `code`, **strong**,
-                             *em* spans render; everything else is plain text.
+      --text TEXT            Body text, block markup per the design spec:
+                             paragraphs, fenced code blocks, lists,
+                             blockquotes, links, `code`, **strong**, *em*.
       --buttons B1 [B2] [B3] Two or three buttons, left to right in the order
                              given. The rightmost is the recommended answer.
       --default N            1-based default button (Return). Defaults to the
@@ -64,15 +87,40 @@ struct Question {
                              GAVE-UP. The panel shows a draining countdown.
       --no-beep              Suppress the single beep at appearance.
 
-    Output (stdout): the clicked button's text, or CANCELED, or GAVE-UP.
-    Exit codes: 0 clicked | 2 canceled (Escape or a button named "Cancel")
-    | 3 gave up | 1 usage error.
+    Batch mode (section 12):
+      --questions-file PATH  A JSON document of 1-10 questions, each with
+                             title, text, 2-4 buttons, optional default
+                             (1-based), give_up_after (seconds), no_beep.
+                             PATH may be "-" to read stdin to EOF. Walks all
+                             questions in one panel. Mutually exclusive with
+                             every single-question flag.
+                             Output: one line of JSON
+                             {"results":[{"index":0,"status":"answered","answer":"..."},...],
+                             "stopped_at":N} on stdout.
+
+    Single-question output (stdout): the clicked button's text, or CANCELED,
+    or GAVE-UP.
+    Exit codes (both modes): 0 answered (batch: every question) | 2 canceled
+    (Escape; batch: sequence stopped) | 3 gave up (batch: a step's bound
+    expired) | 1 usage, parse, or validation error.
 
     A panel appears over the current app, on the screen holding the pointer,
     and never activates or steals focus. Parallel invocations cascade.
     """
 
-    static func parse(_ arguments: [String]) throws(ParseError) -> Question {
+    /// Parse argv into an invocation. Sequence files load here too, so every
+    /// error - usage or document - takes the single exit-1 path in main.
+    static func parseInvocation(_ arguments: [String]) throws(ParseError) -> Invocation {
+        var questionsFilePath: String?
+        var singleFlagsUsed: [String] = []
+
+        func noteSingle(_ flag: String) throws(Question.ParseError) {
+            singleFlagsUsed.append(flag)
+            if questionsFilePath != nil {
+                throw .conflict(with: "--questions-file", flag: flag)
+            }
+        }
+
         var title: String?
         var text: String?
         var buttons: [String] = []
@@ -85,16 +133,19 @@ struct Question {
             let arg = arguments[i]
             switch arg {
             case "--title", "--text":
+                try noteSingle(arg)
                 guard i + 1 < arguments.count else { throw .missingValueFor(arg) }
                 if arg == "--title" { title = arguments[i + 1] } else { text = arguments[i + 1] }
                 i += 2
             case "--buttons":
+                try noteSingle(arg)
                 i += 1
                 while i < arguments.count, !arguments[i].hasPrefix("--") {
                     buttons.append(arguments[i])
                     i += 1
                 }
             case "--default":
+                try noteSingle(arg)
                 guard i + 1 < arguments.count else { throw .missingValueFor(arg) }
                 guard let n = Int(arguments[i + 1]) else {
                     throw .badDefault(arguments[i + 1], count: 0)
@@ -102,6 +153,7 @@ struct Question {
                 defaultOneBased = n
                 i += 2
             case "--give-up-after":
+                try noteSingle(arg)
                 guard i + 1 < arguments.count else { throw .missingValueFor(arg) }
                 guard let s = Double(arguments[i + 1]), s >= 0 else {
                     throw .badGiveUpAfter(arguments[i + 1])
@@ -109,13 +161,32 @@ struct Question {
                 giveUpAfter = s
                 i += 2
             case "--no-beep":
+                try noteSingle(arg)
                 beep = false
                 i += 1
+            case "--questions-file":
+                guard i + 1 < arguments.count else { throw .missingValueFor(arg) }
+                if let first = singleFlagsUsed.first {
+                    throw .conflict(with: arg, flag: first)
+                }
+                if questionsFilePath != nil {
+                    throw .conflict(with: arg, flag: arg)
+                }
+                questionsFilePath = arguments[i + 1]
+                i += 2
             case "--help", "-h":
                 // Handled before parse in main(); reaching here is a bug.
                 throw .unknownArgument(arg)
             default:
                 throw .unknownArgument(arg)
+            }
+        }
+
+        if let path = questionsFilePath {
+            do {
+                return .batch(try SequenceFile.load(path))
+            } catch {
+                throw .documentError(String(describing: error))
             }
         }
 
@@ -129,13 +200,13 @@ struct Question {
         guard defaultIndex >= 0, defaultIndex < buttons.count else {
             throw .badDefault(String(defaultOneBased!), count: buttons.count)
         }
-        return Question(
+        return .single(Question(
             title: title,
             text: text,
             buttons: buttons,
             defaultIndex: defaultIndex,
             giveUpAfter: giveUpAfter,
             beep: beep
-        )
+        ))
     }
 }

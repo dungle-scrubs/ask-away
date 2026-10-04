@@ -1,0 +1,7 @@
+{
+  "questions": [
+    {"title": "deploy: env", "text": "Which environment?", "buttons": ["Staging", "Production"]},
+    {"title": "deploy: confirm", "text": "Sure?", "buttons": ["No", "Yes"]},
+    {"title": "deploy: notes", "text": "Notes?", "buttons": ["Skip", "Add"]}
+  ]
+}

@@ -1,0 +1,1 @@
+{"questions": [{"title": "markup: demo", "text": "A **lead** paragraph with `code` and a [link](https://example.com).\n\n```bash show-me\n#!/bin/bash\necho \"verbatim  spacing\"\n```\n\n- first bullet\n- second bullet\n- third bullet\n\n> A quoted callout\n> across two lines", "buttons": ["Looks wrong", "Looks right"]}]}

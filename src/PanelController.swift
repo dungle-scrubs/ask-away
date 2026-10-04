@@ -8,20 +8,41 @@ final class AskPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
+/// One step of an invocation, fully prepared for layout: parsed body blocks
+/// and, after sizing, the natural stack height at the chosen width.
+@MainActor
+struct PreparedStep {
+    let question: Question
+    var blocks: [BodyBlocks.Block]
+    var naturalHeight: CGFloat = 0
+}
+
 /// The panel's view tree. Layer chrome (ambient shadow, masked content,
 /// neon border) plus the hosted SwiftUI content and the chamfered buttons.
+/// The step-swappable region (metadata, body, buttons) lives in one
+/// `contentStack` container so a §12 transition can snapshot and crossfade
+/// it while chamfer, border, glow, scrim, and drain line persist untouched.
 @MainActor
 final class PanelRootView: NSView {
 
     private(set) var drainLayer: CAShapeLayer?
+    /// The masked content container (vibrancy + scrim + step content).
+    private(set) var contentContainer: NSView?
+    /// The step-swappable container above the scrim (section 10).
+    private(set) var contentStack: NSView?
+    private(set) var bodyDocument: NSHostingView<BodyDocumentView>?
+    private(set) var metadataHost: NSHostingView<MetadataContentView>?
+    private(set) var buttons: [ChamferButton] = []
 
     func configure(
-        size: CGSize,
         title: String,
-        markdown: AttributedString,
-        countdown: CountdownModel,
-        buttons: [ChamferButton],
-        bodyHeight: CGFloat
+        model: StepModel,
+        blocks: [BodyBlocks.Block],
+        naturalHeight: CGFloat,
+        bodyWidth: CGFloat,
+        bodyRegion: CGFloat,
+        buttonRows: [[CGFloat]],
+        buttons: [ChamferButton]
     ) {
         wantsLayer = true
         layer?.masksToBounds = false
@@ -57,6 +78,7 @@ final class PanelRootView: NSView {
         maskShape.path = Chamfer.path(cut: Theme.panelCut, in: panelBounds)
         content.layer?.mask = maskShape
         addSubview(content)
+        contentContainer = content
 
         let effect = NSVisualEffectView(frame: panelBounds)
         effect.material = .hudWindow
@@ -70,24 +92,46 @@ final class PanelRootView: NSView {
         scrim.layer?.backgroundColor = Theme.panelBase.withAlphaComponent(0.9).cgColor
         content.addSubview(scrim)
 
-        let hostingFrame = NSRect(
-            x: Theme.horizontalPadding,
-            y: Theme.bottomPadding + Theme.buttonRowHeight + Theme.bodyToButtons,
-            width: panelRect.width - 2 * Theme.horizontalPadding,
-            height: Theme.metadataHeight + Theme.metadataToBody + bodyHeight
-        )
-        let hosting = NSHostingView(
-            rootView: PanelContentView(
-                title: title,
-                bodyMarkdown: markdown,
-                bodyWidth: hostingFrame.width,
-                countdown: countdown
-            )
-        )
-        hosting.frame = hostingFrame
-        content.addSubview(hosting)
+        // The step-swappable container (sections 7 and 12): metadata row,
+        // body scroll, buttons. Never the vibrancy or scrim - a scrim fade
+        // would flash the desktop through the panel.
+        let stack = NSView(frame: panelBounds)
+        stack.wantsLayer = true
+        content.addSubview(stack)
+        contentStack = stack
 
-        placeButtons(buttons, in: content, size: panelRect.size)
+        // Metadata row hosting: fixed 14pt band at the top (section 1).
+        let metadataFrame = NSRect(
+            x: Theme.horizontalPadding,
+            y: panelRect.height - Theme.topPadding - Theme.metadataHeight,
+            width: panelRect.width - 2 * Theme.horizontalPadding,
+            height: Theme.metadataHeight
+        )
+        let metadata = NSHostingView(
+            rootView: MetadataContentView(title: title, model: model)
+        )
+        metadata.frame = metadataFrame
+        stack.addSubview(metadata)
+        metadataHost = metadata
+
+        // Body region: the only elastic element (section 1). An explicit
+        // NSScrollView so scroller style is forced overlay regardless of the
+        // system's scroll-bar setting - never a reserved gutter (section 10).
+        let bodyFrame = NSRect(
+            x: Theme.horizontalPadding,
+            y: Theme.bottomPadding + buttonBlockHeight(rows: buttonRows) + Theme.bodyToButtons,
+            width: panelRect.width - 2 * Theme.horizontalPadding,
+            height: bodyRegion
+        )
+        let scroll = Self.makeBodyScroll()
+        scroll.frame = bodyFrame
+        let document = NSHostingView(rootView: BodyDocumentView(blocks: blocks, width: bodyWidth))
+        document.frame = NSRect(origin: .zero, size: CGSize(width: bodyWidth, height: max(naturalHeight, 1)))
+        scroll.documentView = document
+        stack.addSubview(scroll)
+        bodyDocument = document
+
+        swapButtons(buttons, rows: buttonRows)
 
         // Drain line: 2pt along the bottom edge, full inner width (section 6).
         // High zPosition: AppKit keeps view-backed sublayers above plain
@@ -127,6 +171,25 @@ final class PanelRootView: NSView {
         layer?.addSublayer(border)
     }
 
+    /// Body scroll view: overlay scrollers, light knobs, no background, no
+    /// border (section 10).
+    static func makeBodyScroll() -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.scrollerStyle = .overlay
+        scroll.scrollerKnobStyle = .light
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.autohidesScrollers = true
+        return scroll
+    }
+
+    private func buttonBlockHeight(rows: [[CGFloat]]) -> CGFloat {
+        return CGFloat(rows.count) * Theme.buttonRowHeight
+            + CGFloat(rows.count - 1) * Theme.secondRowGap
+    }
+
     /// The transparent margin is decoration room, not hit area: clicks there
     /// fall through instead of landing on an invisible band of window.
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -135,25 +198,73 @@ final class PanelRootView: NSView {
         return super.hitTest(point)
     }
 
-    private func placeButtons(_ buttons: [ChamferButton], in content: NSView, size: CGSize) {
-        let widths = buttons.map { ChamferButton.width(for: $0.buttonTitle, kind: $0.kind) }
-        let totalWidth = widths.reduce(0, +) + CGFloat(max(0, widths.count - 1)) * Theme.buttonGap
-        var x = size.width - Theme.horizontalPadding - totalWidth
-        for (button, width) in zip(buttons, widths) {
-            button.frame = NSRect(
-                x: x,
-                y: Theme.bottomPadding,
-                width: width,
-                height: Theme.buttonRowHeight
-            )
-            content.addSubview(button)
-            x += width + Theme.buttonGap
+    /// Swap in a new step's buttons: remove the old row, place the new one.
+    /// Rows are right-aligned; a wrapped second row sits below with the 8pt
+    /// gap, both rows right-aligned, reading order preserved, and every
+    /// button keeps its full 30 x width frame - wrapping never shrinks hit
+    /// targets (section 12).
+    func swapButtons(_ newButtons: [ChamferButton], rows: [[CGFloat]]) {
+        for button in buttons {
+            button.removeFromSuperview()
         }
+        buttons = newButtons
+        guard let contentStack else { return }
+        let panelWidth = contentStack.bounds.width
+        var index = 0
+        let rowCount = rows.count
+        for (rowIndex, row) in rows.enumerated() {
+            let totalWidth = row.reduce(0, +) + CGFloat(max(0, row.count - 1)) * Theme.buttonGap
+            var x = panelWidth - Theme.horizontalPadding - totalWidth
+            // First row on top when wrapped; the tail row sits at the bottom.
+            let y = Theme.bottomPadding
+                + CGFloat(rowCount - 1 - rowIndex) * (Theme.buttonRowHeight + Theme.secondRowGap)
+            for width in row {
+                guard index < newButtons.count else { break }
+                let button = newButtons[index]
+                button.frame = NSRect(x: x, y: y, width: width, height: Theme.buttonRowHeight)
+                contentStack.addSubview(button)
+                x += width + Theme.buttonGap
+                index += 1
+            }
+        }
+    }
+
+    /// Snapshot of the step-swappable content for a §12 crossfade: render the
+    /// contentStack's layer tree into an image layer placed exactly over it.
+    func snapshotContent() -> CALayer? {
+        guard let contentStack, let contentLayer = contentStack.layer else { return nil }
+        let bounds = contentStack.bounds
+        let scale = window?.backingScaleFactor ?? 2
+        guard
+            let context = CGContext(
+                data: nil,
+                width: max(1, Int(bounds.width * scale)),
+                height: max(1, Int(bounds.height * scale)),
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        else { return nil }
+        // Layer geometry is bottom-left origin; the bitmap expects top-first,
+        // so flip the context before rendering.
+        context.translateBy(x: 0, y: bounds.height * scale)
+        context.scaleBy(x: scale, y: -scale)
+        contentLayer.render(in: context)
+        guard let image = context.makeImage() else { return nil }
+        let layer = CALayer()
+        layer.contents = image
+        layer.frame = contentStack.frame
+        layer.zPosition = 100
+        layer.masksToBounds = true
+        return layer
     }
 }
 
-/// Owns one question: builds the panel, runs the app loop, prints the
-/// outcome, and exits with the contract code. One process per invocation.
+/// Owns one invocation - a single question or a §12 sequence. Builds the
+/// panel, runs the app loop, prints the outcome, and exits with the
+/// contract code. One process per invocation; a sequence is one panel and
+/// one cascade slot (section 9).
 @MainActor
 final class PanelController {
 
@@ -179,7 +290,17 @@ final class PanelController {
         }
     }
 
-    private let question: Question
+    /// One entry of the §12 batch output.
+    struct StepResult {
+        let index: Int
+        let status: String
+        let answer: String?
+    }
+
+    private var steps: [PreparedStep]
+    private let isBatch: Bool
+    private var currentStep = 0
+    private var results: [StepResult] = []
     private var panel: AskPanel?
     private var root: PanelRootView?
     private var keyMonitor: Any?
@@ -189,10 +310,18 @@ final class PanelController {
     private var finished = false
     private var screenID = ""
     private var panelSize: CGSize = .zero
-    private let countdown = CountdownModel()
+    private var bodyWidth: CGFloat = 0
+    private var bodyRegion: CGFloat = 0
+    private var buttonRows: [[[CGFloat]]] = []
+    private let model = StepModel()
 
-    init(question: Question) {
-        self.question = question
+    /// - Parameters:
+    ///   - questions: one question, or a validated §12 sequence in file order.
+    ///   - batch: true when the invocation came through --questions-file;
+    ///     batch output is the JSON contract even for a single-question file.
+    init(questions: [Question], batch: Bool) {
+        self.steps = questions.map { PreparedStep(question: $0, blocks: BodyBlocks($0.text).blocks) }
+        self.isBatch = batch
     }
 
     /// Never returns: exits the process with the outcome's contract code
@@ -208,104 +337,138 @@ final class PanelController {
         screenID = Self.screenIdentifier(for: screen)
         let cascadeIndex = Cascade.claimIndex(screenID: screenID)
 
-        let markdown = PanelContentView.prepareBody(question.text)
-        let (width, bodyHeight) = Self.pickDimensions(markdown: markdown)
-        panelSize = CGSize(
-            width: width,
-            height: Theme.topPadding + Theme.metadataHeight + Theme.metadataToBody + bodyHeight
-                + Theme.bodyToButtons + Theme.buttonRowHeight + Theme.bottomPadding
-        )
-
-        buildPanel(screen: screen, cascadeIndex: cascadeIndex, markdown: markdown, bodyHeight: bodyHeight)
+        let sizing = Self.size(prepared: &steps, screen: screen, allowWrap: isBatch)
+        bodyWidth = sizing.width - 2 * Theme.horizontalPadding
+        bodyRegion = sizing.panelHeight - Theme.chromeHeight(wrappedRows: sizing.anyWrap)
+        panelSize = CGSize(width: sizing.width, height: sizing.panelHeight)
+        buttonRows = steps.map { step in
+            Self.buttonRows(
+                question: step.question,
+                innerWidth: sizing.width - 2 * Theme.horizontalPadding,
+                allowWrap: isBatch
+            ).0
+        }
+        buildPanel(screen: screen, cascadeIndex: cascadeIndex)
         showAndAnimate()
 
-        if let bound = question.giveUpAfter {
-            boundSeconds = bound
-            deadline = Date().addingTimeInterval(bound)
-            let ticker = DrainTicker { [weak self] in self?.tick() }
-            ticker.start()
-            self.ticker = ticker
-            tick()
+        // Step-0 model state that loadStep would otherwise only set on a
+        // transition: the k/n indicator must show from the first frame.
+        model.stepIndex = 1
+        model.stepCount = steps.count
+        model.indicator = isBatch && steps.count > 1 ? "1/\(steps.count)" : nil
+
+        // One beep per invocation (sections 6 and 12): the moment the panel
+        // appears; in a sequence one objection (any no_beep) silences it.
+        if steps.allSatisfy({ $0.question.beep }) {
+            NSSound.beep()
         }
 
-        if question.beep {
-            NSSound.beep()
+        startTiming()
+        if isBatch, steps.count > 1 {
+            announceStep(currentStep)
         }
 
         NSApp.run()
         fatalError("NSApplication.run() returned; the process exits from finish(_:)")
     }
 
-    // MARK: Window construction
+    // MARK: Sizing (sections 1, 11, 12)
 
-    private func buildPanel(screen: NSScreen, cascadeIndex: Int, markdown: AttributedString, bodyHeight: CGFloat) {
-        let visualFrame = Self.placement(size: panelSize, screen: screen, cascadeIndex: cascadeIndex)
-        // The window is larger than the visual panel: transparent margin for
-        // the outer glow, the ambient shadow, and clear of the system's
-        // rounded-window edge treatment.
-        let windowFrame = visualFrame.insetBy(dx: -Theme.windowMargin, dy: -Theme.windowMargin)
-        let panel = AskPanel(
-            contentRect: windowFrame,
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        // The spec's "becomesKeyOnlyOnClick = false" maps to this API: a
-        // panel becomes key on click, and we take key explicitly via makeKey().
-        panel.becomesKeyOnlyIfNeeded = false
-        panel.hidesOnDeactivate = false
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.appearance = NSAppearance(named: .darkAqua)
-        panel.title = question.title
-        panel.isReleasedWhenClosed = false
+    struct Sizing {
+        var width: CGFloat
+        var panelHeight: CGFloat
+        var naturalHeights: [CGFloat]
+        var anyWrap: Bool
+    }
 
-        let buttons: [ChamferButton] = question.buttons.enumerated().map { index, title in
-            let button = ChamferButton(
-                title: title,
-                kind: index == question.defaultIndex ? .defaultFilled : .ghost
-            )
-            button.target = self
-            button.action = #selector(buttonClicked(_:))
-            return button
-        }
+    /// Width: smallest of 340/420/520 at which every body fits in 2 lines
+    /// (the rendered block stack, measured); otherwise 520. Height: the max
+    /// per-question height under the §1 formula and caps; the body region is
+    /// the only elastic element and scrolls beyond its cap. Ellipsis
+    /// truncation does not exist. Also pins each code chip's rendered height
+    /// (capped at 25% of the visible frame) into the step's blocks, so the
+    /// render view and the measurement agree by construction.
+    static func size(prepared: inout [PreparedStep], screen: NSScreen, allowWrap: Bool) -> Sizing {
+        let visibleHeight = screen.visibleFrame.height
+        let bodyCap = Theme.bodyCapFraction * visibleHeight
+        let panelCap = Theme.panelCapFraction * visibleHeight
+        let chipCap = Theme.codeChipCapFraction * visibleHeight
 
-        let root = PanelRootView(frame: NSRect(origin: .zero, size: windowFrame.size))
-        root.configure(
-            size: panelSize,
-            title: question.title,
-            markdown: markdown,
-            countdown: countdown,
-            buttons: buttons,
-            bodyHeight: bodyHeight
-        )
-        panel.contentView = root
-
-        // Return plumbing: the default button cell drives Return for the
-        // panel and VoiceOver alike (section 10).
-        panel.defaultButtonCell = buttons[question.defaultIndex].cell as? NSButtonCell
-
-        // Tab cycling across the row for full-keyboard-access users (section 5).
-        for (button, next) in zip(buttons, buttons.dropFirst()) {
-            button.nextKeyView = next
-        }
-
-        // Escape is not free in a borderless panel: bind it via a local
-        // keyDown monitor (section 10).
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, !self.finished else { return event }
-            if event.keyCode == 53 {
-                self.finish(.canceled)
-                return nil
+        var width = Theme.widthCandidates.last!
+        for candidate in Theme.widthCandidates {
+            let fits = prepared.allSatisfy { step in
+                BodyMeasurer.stackHeight(step.blocks, width: candidate, chipCap: chipCap)
+                    <= Theme.twoLineBudget + 0.5
             }
-            return event
+            if fits {
+                width = candidate
+                break
+            }
         }
 
-        self.panel = panel
-        self.root = root
+        var naturalHeights: [CGFloat] = []
+        var anyWrap = false
+        var panelHeight: CGFloat = 0
+        for index in prepared.indices {
+            // Pin the chip heights the render will use.
+            for (blockIndex, block) in prepared[index].blocks.enumerated() {
+                if case let .code(chip) = block {
+                    prepared[index].blocks[blockIndex] = .code(BodyBlocks.CodeChip(
+                        text: chip.text,
+                        label: chip.label,
+                        height: BodyMeasurer.chipHeight(chip, cap: chipCap)
+                    ))
+                }
+            }
+            let natural = BodyMeasurer.stackHeight(prepared[index].blocks, width: width, chipCap: chipCap)
+            naturalHeights.append(natural)
+            prepared[index].naturalHeight = natural
+            let wraps = allowWrap && Self.buttonRows(
+                question: prepared[index].question,
+                innerWidth: width - 2 * Theme.horizontalPadding,
+                allowWrap: true
+            ).1
+            anyWrap = anyWrap || wraps
+            let chrome = Theme.chromeHeight(wrappedRows: wraps)
+            let region = min(natural, bodyCap, panelCap - chrome)
+            panelHeight = max(panelHeight, chrome + region)
+        }
+        return Sizing(width: width, panelHeight: panelHeight, naturalHeights: naturalHeights, anyWrap: anyWrap)
+    }
+
+    /// Button row layout (sections 5 and 12): right-aligned single row, or a
+    /// greedy wrap to a second right-aligned row when the total exceeds the
+    /// inner width. Returns the rows (widths per row, reading order) and
+    /// whether a wrap happened. Single-question mode never wraps - its
+    /// contract is byte-identical (section 12).
+    static func buttonRows(question: Question, innerWidth: CGFloat, allowWrap: Bool) -> ([[CGFloat]], Bool) {
+        let widths = question.buttons.enumerated().map { index, title in
+            ChamferButton.width(for: title, kind: index == question.defaultIndex ? .defaultFilled : .ghost)
+        }
+        let total = widths.reduce(0, +) + CGFloat(max(0, widths.count - 1)) * Theme.buttonGap
+        guard allowWrap, total > innerWidth else { return ([widths], false) }
+
+        var first: [CGFloat] = []
+        var consumed: CGFloat = 0
+        for (index, buttonWidth) in widths.enumerated() {
+            let added = buttonWidth + (first.isEmpty ? 0 : Theme.buttonGap)
+            if consumed + added <= innerWidth {
+                first.append(buttonWidth)
+                consumed += added
+            } else {
+                // A tail always exists here: total > innerWidth means some
+                // button failed to fit the first row.
+                return ([first, Array(widths[index...])], true)
+            }
+        }
+        return ([widths], false)
+    }
+
+    private static func screenIdentifier(for screen: NSScreen) -> String {
+        if let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+            return displayID.uint32Value.description
+        }
+        return screen.localizedName
     }
 
     /// Screen holding the pointer, horizontally centered, top edge at 42% of
@@ -335,27 +498,183 @@ final class PanelController {
         return fits ? candidate : frameWith(offset: 0)
     }
 
-    /// Width rule (section 1): smallest of 340/420/520 where the body fits in
-    /// 2 lines measured in the real renderer; otherwise the largest width and
-    /// a taller body capped at 4 lines.
-    static func pickDimensions(markdown: AttributedString) -> (width: CGFloat, bodyHeight: CGFloat) {
-        let cap = CGFloat(Theme.maxBodyLines) * Theme.bodyLineHeight
-        var overflowHeight: CGFloat = 0
-        for candidate in Theme.widthCandidates {
-            let height = BodyMeasurer.height(markdown: markdown, width: candidate)
-            if height <= Theme.twoLineBudget + 0.5 {
-                return (candidate, min(height, cap))
-            }
-            overflowHeight = height
+    // MARK: Window construction
+
+    private func buildPanel(screen: NSScreen, cascadeIndex: Int) {
+        let visualFrame = Self.placement(size: panelSize, screen: screen, cascadeIndex: cascadeIndex)
+        // The window is larger than the visual panel: transparent margin for
+        // the outer glow, the ambient shadow, and clear of the system's
+        // rounded-window edge treatment.
+        let windowFrame = visualFrame.insetBy(dx: -Theme.windowMargin, dy: -Theme.windowMargin)
+        let panel = AskPanel(
+            contentRect: windowFrame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // The spec's "becomesKeyOnlyOnClick = false" maps to this API: a
+        // panel becomes key on click, and we take key explicitly via makeKey().
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.hidesOnDeactivate = false
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.appearance = NSAppearance(named: .darkAqua)
+        panel.title = steps[0].question.title
+        panel.isReleasedWhenClosed = false
+
+        let buttons = makeButtons(for: steps[0].question)
+
+        let root = PanelRootView(frame: NSRect(origin: .zero, size: windowFrame.size))
+        root.configure(
+            title: steps[0].question.title,
+            model: model,
+            blocks: steps[0].blocks,
+            naturalHeight: steps[0].naturalHeight,
+            bodyWidth: bodyWidth,
+            bodyRegion: bodyRegion,
+            buttonRows: buttonRows[0],
+            buttons: buttons
+        )
+        panel.contentView = root
+
+        applyStepChrome(to: panel, buttons: buttons, question: steps[0].question)
+
+        // Escape is not free in a borderless panel: bind it via a local
+        // keyDown monitor (section 10). The monitor stays put across steps.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, !self.finished, event.keyCode == 53 else { return event }
+            self.escapePressed()
+            return nil
         }
-        return (Theme.widthCandidates.last!, min(overflowHeight, cap))
+
+        self.panel = panel
+        self.root = root
     }
 
-    private static func screenIdentifier(for screen: NSScreen) -> String {
-        if let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
-            return displayID.uint32Value.description
+    /// Make one step's ChamferButtons (section 5 kinds and targets).
+    private func makeButtons(for question: Question) -> [ChamferButton] {
+        question.buttons.enumerated().map { index, title in
+            let button = ChamferButton(
+                title: title,
+                kind: index == question.defaultIndex ? .defaultFilled : .ghost
+            )
+            button.target = self
+            button.action = #selector(buttonClicked(_:))
+            return button
         }
-        return screen.localizedName
+    }
+
+    /// Return plumbing (section 10) and Tab cycling (section 5), reassigned
+    /// at every step swap so Return and VoiceOver share one source of truth
+    /// (section 12).
+    private func applyStepChrome(to panel: AskPanel, buttons: [ChamferButton], question: Question) {
+        panel.defaultButtonCell = buttons[question.defaultIndex].cell as? NSButtonCell
+        for (button, next) in zip(buttons, buttons.dropFirst()) {
+            button.nextKeyView = next
+        }
+    }
+
+    // MARK: Step content (section 12)
+
+    private func loadStep(_ index: Int) {
+        currentStep = index
+        let step = steps[index]
+        panel?.title = step.question.title
+
+        model.stepIndex = index + 1
+        model.stepCount = steps.count
+        // A single-question file renders no indicator (section 12).
+        model.indicator = isBatch && steps.count > 1 ? "\(index + 1)/\(steps.count)" : nil
+
+        root?.bodyDocument?.rootView = BodyDocumentView(blocks: step.blocks, width: bodyWidth)
+        root?.bodyDocument?.frame = NSRect(
+            origin: .zero,
+            size: CGSize(width: bodyWidth, height: max(step.naturalHeight, 1))
+        )
+        root?.metadataHost?.rootView = MetadataContentView(title: step.question.title, model: model)
+
+        let buttons = makeButtons(for: step.question)
+        root?.swapButtons(buttons, rows: buttonRows[index])
+        if let panel {
+            applyStepChrome(to: panel, buttons: buttons, question: step.question)
+        }
+        startTiming()
+    }
+
+    /// §12 step transition: snapshot the outgoing content, swap the live
+    /// content to the next question, fade the snapshot while the incoming
+    /// content rises 2pt into place (180ms main curve; opacity-only 100ms
+    /// under Reduce Motion). Chamfer, border, glow, and drain line persist.
+    private func transition(to index: Int) {
+        guard let root, let contentLayer = root.contentContainer?.layer else { return }
+        let snapshot = root.snapshotContent()
+
+        loadStep(index)
+
+        if let snapshot {
+            contentLayer.addSublayer(snapshot)
+        }
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let duration = reduceMotion ? Theme.stepReduceMotionDuration : Theme.stepTransitionDuration
+        let riseTransform = CATransform3DMakeTranslation(0, -Theme.stepRise, 0)
+
+        // Model values hold the FINAL state; the animations only supply the
+        // presentation fromValues, so nothing snaps back when they end.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let stackLayer = root.contentStack?.layer {
+            stackLayer.opacity = 1
+            stackLayer.transform = CATransform3DIdentity
+        }
+        CATransaction.commit()
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock {
+            snapshot?.removeFromSuperlayer()
+        }
+        if let snapshot {
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 1
+            fade.toValue = 0
+            fade.duration = duration
+            fade.timingFunction = Theme.mainCurve
+            snapshot.add(fade, forKey: "step.fade")
+        }
+        if let stackLayer = root.contentStack?.layer {
+            let appear = CABasicAnimation(keyPath: "opacity")
+            appear.fromValue = 0
+            appear.toValue = 1
+            appear.duration = duration
+            appear.timingFunction = Theme.mainCurve
+            stackLayer.add(appear, forKey: "step.appear")
+            if !reduceMotion {
+                let rise = CABasicAnimation(keyPath: "transform")
+                rise.fromValue = riseTransform
+                rise.toValue = CATransform3DIdentity
+                rise.duration = duration
+                rise.timingFunction = Theme.mainCurve
+                stackLayer.add(rise, forKey: "step.rise")
+            }
+        }
+        CATransaction.commit()
+    }
+
+    /// VoiceOver announcement for a step change (sections 8 and 12): one per
+    /// change, "Question k of n: <title>. <plain body>" (markdown stripped),
+    /// posted when the new content lands. Countdown silence applies.
+    private func announceStep(_ index: Int) {
+        let step = steps[index]
+        let text = "Question \(index + 1) of \(steps.count): \(step.question.title). "
+            + BodyBlocks.plainText(of: step.blocks)
+        guard let panel else { return }
+        NSAccessibility.post(
+            element: panel,
+            notification: .announcementRequested,
+            userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high]
+        )
     }
 
     // MARK: Show and animate
@@ -402,7 +721,35 @@ final class PanelController {
         layer.add(fade, forKey: "entrance.opacity")
     }
 
-    // MARK: Countdown
+    // MARK: Countdown (sections 6 and 12)
+
+    /// Restart the per-question bound: the drain line resets to full width
+    /// and accent instantly at the step start (a width crossfade would
+    /// misread as progress); a step without a bound hides the line and
+    /// countdown exactly like a no-bound single invocation.
+    private func startTiming() {
+        let bound = steps[currentStep].question.giveUpAfter
+        if let bound {
+            boundSeconds = bound
+            deadline = Date().addingTimeInterval(bound)
+            if ticker == nil {
+                let ticker = DrainTicker { [weak self] in self?.tick() }
+                ticker.start()
+                self.ticker = ticker
+            }
+            updateCountdown(remaining: bound)
+        } else {
+            deadline = nil
+            model.secondsLeft = nil
+            model.color = Theme.accentSwiftUI
+            if let drainLayer = root?.drainLayer {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                drainLayer.path = CGPath(rect: .zero, transform: nil)
+                CATransaction.commit()
+            }
+        }
+    }
 
     private func tick() {
         guard !finished, let deadline else { return }
@@ -410,20 +757,24 @@ final class PanelController {
         if remaining <= 0 {
             updateCountdown(remaining: 0)
             ticker?.stop()
-            finish(.gaveUp)
+            ticker = nil
+            gaveUpAtCurrentStep()
             return
         }
         updateCountdown(remaining: remaining)
     }
 
     private func updateCountdown(remaining: TimeInterval) {
-        countdown.secondsLeft = Int(remaining.rounded(.up))
+        model.secondsLeft = Int(remaining.rounded(.up))
         let fraction = boundSeconds > 0 ? max(0, min(1, remaining / boundSeconds)) : 0
         let color = Theme.rampColor(remainingFraction: fraction)
-        countdown.color = SwiftUI.Color(nsColor: color)
+        model.color = SwiftUI.Color(nsColor: color)
 
         guard let drainLayer = root?.drainLayer else { return }
-        let width = (panelSize.width - Theme.drainLineWidth) * CGFloat(fraction)
+        // The visual panel width is the window minus the transparent margin
+        // on both sides; the line spans that width minus the bottom cut.
+        let visualWidth = panelSize.width
+        let width = (visualWidth - Theme.panelCut) * CGFloat(fraction)
         // Width moves continuously; color steps crossfade over 300ms (section 7).
         // The line sits just inside the border stroke (section 6): y 1..3.
         CATransaction.begin()
@@ -443,19 +794,103 @@ final class PanelController {
 
     @objc private func buttonClicked(_ sender: ChamferButton) {
         guard !finished else { return }
-        // A button named "Cancel" maps to CANCELED (predecessor contract).
-        if sender.buttonTitle == "Cancel" {
+        if isBatch {
+            // A button labeled "Cancel" answers only its own question and
+            // the sequence continues; canceling the whole sequence is
+            // Escape's job (section 12).
+            recordAnswered(sender.buttonTitle)
+        } else if sender.buttonTitle == "Cancel" {
+            // Single-question legacy contract: a clicked Cancel is CANCELED.
             finish(.canceled)
         } else {
             finish(.answered(sender.buttonTitle))
         }
     }
 
+    private func escapePressed() {
+        if isBatch {
+            stopSequence(status: "canceled", exitCode: 2)
+        } else {
+            finish(.canceled)
+        }
+    }
+
+    private func gaveUpAtCurrentStep() {
+        if isBatch {
+            stopSequence(status: "gave-up", exitCode: 3)
+        } else {
+            finish(.gaveUp)
+        }
+    }
+
+    private func recordAnswered(_ answer: String) {
+        results.append(StepResult(index: currentStep, status: "answered", answer: answer))
+        if currentStep + 1 < steps.count {
+            transition(to: currentStep + 1)
+            announceStep(currentStep)
+        } else {
+            stopSequence(status: nil, exitCode: 0)
+        }
+    }
+
+    /// End the sequence: the stop entry (canceled/gave-up) joins the
+    /// collected answers, and one line of JSON carries the whole outcome.
+    /// Partial answers survive a mid-sequence stop. stopped_at is the 0-based
+    /// index of the stopped step when stopped early, questions.count when
+    /// every question was answered (section 12 invariants).
+    private func stopSequence(status: String?, exitCode: Int32) {
+        if let status {
+            results.append(StepResult(index: currentStep, status: status, answer: nil))
+        }
+        let stoppedAt = status != nil ? currentStep : steps.count
+        finishRaw(output: Self.batchJSON(results: results, stoppedAt: stoppedAt), exit: exitCode)
+    }
+
+    /// Compact batch JSON: {"results":[{"index":0,"status":"answered",
+    /// "answer":"Deploy"},...],"stopped_at":N} - one line, UTF-8, newline.
+    static func batchJSON(results: [StepResult], stoppedAt: Int) -> String {
+        let entries = results.map { result in
+            var entry = "{\"index\":\(result.index),\"status\":\"\(result.status)\""
+            if let answer = result.answer {
+                entry += ",\"answer\":\"\(Self.jsonEscaped(answer))\""
+            }
+            return entry + "}"
+        }
+        return "{\"results\":[\(entries.joined(separator: ","))],\"stopped_at\":\(stoppedAt)}"
+    }
+
+    private static func jsonEscaped(_ s: String) -> String {
+        var out = ""
+        for scalar in s.unicodeScalars {
+            switch scalar {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default:
+                if scalar.value < 0x20 {
+                    out += String(format: "\\u%04x", scalar.value)
+                } else {
+                    out.unicodeScalars.append(scalar)
+                }
+            }
+        }
+        return out
+    }
+
+    /// Single-question exit: the outcome's own stdout line.
     private func finish(_ outcome: Outcome) {
+        finishRaw(output: outcome.stdout, exit: outcome.exitCode)
+    }
+
+    /// Never returns: prints, releases the cascade slot, animates the exit,
+    /// and exits with the contract code.
+    private func finishRaw(output: String, exit code: Int32) {
         guard !finished else { return }
         finished = true
 
-        print(outcome.stdout)
+        print(output)
         fflush(stdout)
         Cascade.release(screenID: screenID)
         if let keyMonitor {
@@ -493,7 +928,7 @@ final class PanelController {
         DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.02) { [weak self] in
             self?.panel?.orderOut(nil)
             self?.panel?.close()
-            exit(outcome.exitCode)
+            exit(code)
         }
     }
 }

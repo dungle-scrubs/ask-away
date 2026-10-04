@@ -1,130 +1,348 @@
 import AppKit
 import SwiftUI
 
-/// Live countdown state for the metadata row. The drain line is a CALayer
-/// driven by PanelController; this model carries only the seconds text and
-/// its shared ramp color, so line and number always agree (design.md section 6).
+/// Live state for the metadata row (design.md sections 1 and 12). The drain
+/// line is a CALayer driven by PanelController; this model carries the step
+/// indicator, the seconds text, and their shared ramp color, so line and
+/// number always agree (section 6).
 @MainActor
-final class CountdownModel: ObservableObject {
-    /// nil when the invocation has no time bound: no countdown is rendered.
+final class StepModel: ObservableObject {
+    /// "k/n" while a sequence runs; nil in single-question mode and for a
+    /// single-question file (section 12).
+    @Published var indicator: String?
+    /// Count of questions in a sequence, for the AX label.
+    @Published var stepIndex: Int = 0
+    @Published var stepCount: Int = 0
+    /// nil when the current question has no time bound: no countdown renders.
     @Published var secondsLeft: Int?
     @Published var color: Color = Theme.accentSwiftUI
 }
 
-/// The SwiftUI content hosted in the panel's NSHostingView: metadata row
-/// (title left, countdown right) and the body block with inline markdown
-/// (design.md sections 1 and 3).
-struct PanelContentView: View {
-    let title: String
-    let bodyMarkdown: AttributedString
-    let bodyWidth: CGFloat
-    @ObservedObject var countdown: CountdownModel
+/// Shared body styling and the calibrated line spacings (section 3). The
+/// calibration follows decision D10: SwiftUI line spacing is measured from
+/// the real renderer's natural single-line height, not font metrics.
+@MainActor
+enum BodyStyle {
 
-    /// SF Pro Text 15pt renders on a 21pt line height (section 3). SwiftUI's
-    /// lineSpacing adds to the renderer's own natural line height, which does
-    /// not match NSLayoutManager's metric, so the delta is calibrated once
-    /// from the real single-line render (see BodyMeasurer.calibrate).
-    @MainActor static let bodyLineSpacing: CGFloat = BodyMeasurer.calibrateLineSpacing()
+    /// Style a parsed group's inline spans in place: code spans per section 2
+    /// (SF Mono 13.5, text-code on white 5% chip) and links per section 11
+    /// (accent + underline, the WCAG 1.4.1 non-color cue). Strong and em
+    /// render from their inlinePresentationIntent traits untouched.
+    static func styled(_ source: AttributedString) -> AttributedString {
+        var attr = source
+        for run in attr.runs {
+            let range = run.range
+            if let intent = run.inlinePresentationIntent, intent.contains(.code) {
+                attr[range].font = Theme.codeSwiftUIFont
+                attr[range].kern = 0
+                attr[range].foregroundColor = Theme.textCodeSwiftUI
+                attr[range].backgroundColor = Theme.chipFillSwiftUI
+            }
+            if run.link != nil {
+                attr[range].foregroundColor = Theme.accentSwiftUI
+                attr[range].underlineStyle = .single
+            }
+        }
+        return attr
+    }
+
+    static let bodyLineSpacing: CGFloat = calibrate(target: Theme.bodyLineHeight, font: Theme.bodyFont, kern: Theme.bodyKerning)
+    static let codeLineSpacing: CGFloat = calibrate(target: Theme.codeBlockLineHeight, font: Theme.codeBlockFont, kern: 0)
+
+    /// One-time calibration: render a single line with zero spacing, read the
+    /// renderer's natural line height, and take the delta to the spec target.
+    private static func calibrate(target: CGFloat, font: NSFont, kern: CGFloat) -> CGFloat {
+        var probe = AttributedString("Hg")
+        probe.font = Font(font)
+        probe.kern = kern
+        let host = NSHostingView(rootView:
+            Text(probe)
+                .lineSpacing(0)
+                .fixedSize(horizontal: false, vertical: true)
+        )
+        let natural = host.fittingSize.height
+        return max(0, target - natural)
+    }
+}
+
+/// The metadata row: title left; step indicator and countdown right
+/// (sections 1 and 12). Baseline-aligned, one line, tail-truncated.
+struct MetadataContentView: View {
+    let title: String
+    @ObservedObject var model: StepModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(title)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .font(Theme.metadataSwiftUIFont)
+                .kerning(Theme.metadataKerning)
+                .foregroundStyle(Theme.accentSwiftUI)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(0)
+            Spacer(minLength: 12)
+            if model.indicator != nil {
+                indicatorView
+                    .layoutPriority(1)
+            } else if let seconds = model.secondsLeft {
+                countdownText(seconds)
+                    .layoutPriority(1)
+            }
+        }
+        .frame(height: Theme.metadataHeight, alignment: .center)
+    }
+
+    /// "2/3 · 42s": the k/n segment holds accent regardless of the ramp; only
+    /// the seconds segment adopts the ramp color (section 12). No bound on
+    /// the current step renders the indicator alone.
+    private var indicatorView: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text("\(model.stepIndex)/\(model.stepCount)")
+            Text(" \u{00B7} ")
+            if let seconds = model.secondsLeft {
+                countdownText(seconds)
+            }
+        }
+        .font(Theme.metadataSwiftUIFont)
+        .kerning(Theme.metadataKerning)
+        .monospacedDigit()
+        .foregroundStyle(Theme.accentSwiftUI)
+        .lineLimit(1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("question \(model.stepIndex) of \(model.stepCount)")
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private func countdownText(_ seconds: Int) -> some View {
+        Text("\(seconds)s")
+            .foregroundStyle(model.color)
+            .accessibilityLabel("\(seconds) seconds remaining")
+    }
+
+    private var accessibilityValue: String {
+        var value = "\(model.stepIndex)/\(model.stepCount)"
+        if let seconds = model.secondsLeft {
+            value += " \u{00B7} \(seconds)s"
+        }
+        return value
+    }
+}
+
+/// One body block as a SwiftUI view. Mirrors the measurement views in
+/// BodyMeasurer exactly - the width rule (section 1) sizes the panel from
+/// these heights, so measure and render must agree.
+struct BodyDocumentView: View {
+    let blocks: [BodyBlocks.Block]
+    let width: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.blockGap) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                blockView(block)
+            }
+        }
+        .frame(width: width, alignment: .topLeading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(BodyBlocks.plainText(of: blocks))
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: BodyBlocks.Block) -> some View {
+        switch block {
+        case let .paragraph(attr):
+            bodyText(BodyStyle.styled(attr))
+        case let .quote(attr):
+            // The stripe is the text's background, not a greedy sibling: it
+            // spans exactly the quoted text's height (section 11).
+            bodyText(BodyStyle.styled(attr))
+                .padding(.leading, Theme.quoteIndent)
+                .background(alignment: .leading) {
+                    Rectangle()
+                        .fill(Theme.accentSwiftUI)
+                        .frame(width: Theme.quoteStripeWidth)
+                }
+                .padding(.leading, Theme.quoteStripeWidth)
+                .frame(width: width, alignment: .topLeading)
+        case let .list(rows):
+            VStack(alignment: .leading, spacing: Theme.listItemSpacing) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    HStack(alignment: .firstTextBaseline, spacing: Theme.listHang - Theme.listMarkerWidth) {
+                        Text(row.marker)
+                            .font(Theme.bodySwiftUIFont)
+                            .foregroundStyle(Theme.textSecondarySwiftUI)
+                            .frame(width: Theme.listMarkerWidth, alignment: .leading)
+                        bodyText(BodyStyle.styled(row.text))
+                            .frame(width: width - Theme.listHang, alignment: .topLeading)
+                    }
+                }
+            }
+        case let .code(chip):
+            CodeChipView(chip: chip, width: width)
+        }
+    }
+
+    private func bodyText(_ attr: AttributedString) -> some View {
+        Text(attr)
+            .font(Theme.bodySwiftUIFont)
+            .kerning(Theme.bodyKerning)
+            .lineSpacing(BodyStyle.bodyLineSpacing)
+            .foregroundStyle(Theme.textBodySwiftUI)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// A fenced code block as a full-width inset chip (section 11): white 6%
+/// fill, 6pt radius, 12pt inner padding, optional info-string label in
+/// accent metadata style 4pt above the code, and an overlay-scrolled inner
+/// scroll view capped at 25% of the visible frame. No syntax highlighting
+/// in v1.
+struct CodeChipView: View {
+    let chip: BodyBlocks.CodeChip
+    let width: CGFloat
+
+    private var hasLabel: Bool { chip.label != nil }
+    /// The inner scroll area: chip height minus padding, minus the label row
+    /// and the 4pt gap when a label renders.
+    private var codeAreaHeight: CGFloat {
+        chip.height - 2 * Theme.codeChipPadding
+            - (hasLabel ? Theme.metadataLineHeight + Theme.codeChipLabelGap : 0)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.codeChipLabelGap) {
+            if let label = chip.label {
+                Text(label)
                     .font(Theme.metadataSwiftUIFont)
                     .kerning(Theme.metadataKerning)
                     .foregroundStyle(Theme.accentSwiftUI)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(0)
-                if let seconds = countdown.secondsLeft {
-                    Spacer(minLength: 12)
-                    Text("\(seconds)s")
-                        .font(Theme.metadataSwiftUIFont)
-                        .kerning(Theme.metadataKerning)
-                        .monospacedDigit()
-                        .foregroundStyle(countdown.color)
-                        .lineLimit(1)
-                        .layoutPriority(1)
-                        .accessibilityLabel("\(seconds) seconds remaining")
-                }
+                    .frame(height: Theme.metadataLineHeight, alignment: .center)
             }
-            .frame(height: Theme.metadataHeight, alignment: .center)
-            Text(bodyMarkdown)
-                .font(Theme.bodySwiftUIFont)
-                .kerning(Theme.bodyKerning)
-                .lineSpacing(Self.bodyLineSpacing)
-                .foregroundStyle(Theme.textBodySwiftUI)
-                .lineLimit(Theme.maxBodyLines)
-                .truncationMode(.tail)
-                .frame(width: bodyWidth, alignment: .topLeading)
-                .padding(.top, Theme.metadataToBody)
-                .accessibilitySortPriority(1)
+            CodeChipScroller(text: chip.text)
+                .frame(height: codeAreaHeight)
         }
-    }
-
-    /// Parse `--text` as inline markdown (emphasis, strong, code spans only;
-    /// section 3) and style code spans per section 2. Malformed markdown
-    /// degrades to plain text rather than failing the invocation.
-    static func prepareBody(_ raw: String) -> AttributedString {
-        guard var parsed = try? AttributedString(
-            markdown: raw,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) else {
-            return AttributedString(raw)
-        }
-        for run in parsed.runs {
-            guard let intent = run.inlinePresentationIntent, intent.contains(.code) else { continue }
-            parsed[run.range].font = Theme.codeSwiftUIFont
-            parsed[run.range].kern = 0
-            parsed[run.range].foregroundColor = Theme.textCodeSwiftUI
-            parsed[run.range].backgroundColor = Theme.chipFillSwiftUI
-        }
-        return parsed
+        .padding(Theme.codeChipPadding)
+        .frame(width: width, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.codeChipRadius)
+                .fill(Theme.codeChipFillSwiftUI)
+        )
     }
 }
 
-/// Unbounded measurement view for the width rule (section 1): the body laid
-/// out at a candidate width, no line limit, so fittingSize.height reports
-/// the wrapped height in the real SwiftUI renderer.
-struct BodyMeasureView: View {
-    let markdown: AttributedString
-    let width: CGFloat
-    var spacing: CGFloat = PanelContentView.bodyLineSpacing
+/// The chip's inner scroll view (section 11): overlay-style scrollers only,
+/// never a reserved gutter, in both axes - code content renders verbatim and
+/// never wraps.
+private struct CodeChipScroller: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.scrollerStyle = .overlay
+        scroll.scrollerKnobStyle = .light
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.autohidesScrollers = true
+        let document = NSHostingView(rootView: CodeDocumentText(text: text))
+        let natural = document.fittingSize
+        document.frame = NSRect(origin: .zero, size: natural)
+        scroll.documentView = document
+        return scroll
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {}
+}
+
+/// Verbatim code text: SF Mono 12.5/16, text-code, no wrap - the scroll view
+/// owns overflow (section 11).
+private struct CodeDocumentText: View {
+    let text: String
 
     var body: some View {
-        Text(markdown)
+        Text(verbatim: text)
+            .font(Theme.codeBlockSwiftUIFont)
+            .lineSpacing(BodyStyle.codeLineSpacing)
+            .foregroundStyle(Theme.textCodeSwiftUI)
+            .fixedSize(horizontal: true, vertical: true)
+    }
+}
+
+// MARK: Measurement
+
+/// Unbounded measurement of the body block stack for the width rule and the
+/// height caps (sections 1 and 11). Every function mirrors its render view
+/// in BodyDocumentView exactly.
+@MainActor
+enum BodyMeasurer {
+
+    /// Wrapped attributed text height at `width` in the real renderer.
+    static func textHeight(_ attr: AttributedString, width: CGFloat, kern: CGFloat, lineSpacing: CGFloat) -> CGFloat {
+        let view = Text(attr)
             .font(Theme.bodySwiftUIFont)
-            .kerning(Theme.bodyKerning)
-            .lineSpacing(spacing)
+            .kerning(kern)
+            .lineSpacing(lineSpacing)
             .foregroundStyle(Theme.textBodySwiftUI)
             .fixedSize(horizontal: false, vertical: true)
             .frame(width: width, alignment: .topLeading)
+        let host = NSHostingView(rootView: view)
+        let height = host.fittingSize.height
+        return height > 0 ? height : Theme.bodyLineHeight
+    }
+
+    /// Natural (unwrapped) verbatim text height, for code chip content.
+    static func verbatimHeight(_ text: String) -> CGFloat {
+        let host = NSHostingView(rootView: CodeDocumentText(text: text))
+        let height = host.fittingSize.height
+        return height > 0 ? height : Theme.codeBlockLineHeight
+    }
+
+    /// A code chip's rendered height: content + 12pt padding + label row,
+    /// capped at `cap` (25% of the visible frame, section 11).
+    static func chipHeight(_ chip: BodyBlocks.CodeChip, cap: CGFloat) -> CGFloat {
+        let labelExtra: CGFloat = chip.label != nil ? Theme.metadataLineHeight + Theme.codeChipLabelGap : 0
+        let natural = verbatimHeight(chip.text) + 2 * Theme.codeChipPadding + labelExtra
+        return min(natural, cap)
+    }
+
+    /// The whole block stack's natural height at `width`, with chip caps
+    /// applied. `chipCap` comes from the target screen's visible frame.
+    static func stackHeight(_ blocks: [BodyBlocks.Block], width: CGFloat, chipCap: CGFloat) -> CGFloat {
+        guard !blocks.isEmpty else { return Theme.bodyLineHeight }
+        var height: CGFloat = 0
+        for (index, block) in blocks.enumerated() {
+            if index > 0 { height += Theme.blockGap }
+            switch block {
+            case let .paragraph(attr):
+                height += textHeight(attr, width: width, kern: Theme.bodyKerning, lineSpacing: BodyStyle.bodyLineSpacing)
+            case let .quote(attr):
+                height += textHeight(
+                    attr,
+                    width: width - Theme.quoteStripeWidth - Theme.quoteIndent,
+                    kern: Theme.bodyKerning,
+                    lineSpacing: BodyStyle.bodyLineSpacing
+                )
+            case let .list(rows):
+                for (rowIndex, row) in rows.enumerated() {
+                    if rowIndex > 0 { height += Theme.listItemSpacing }
+                    height += textHeight(
+                        row.text,
+                        width: width - Theme.listHang,
+                        kern: Theme.bodyKerning,
+                        lineSpacing: BodyStyle.bodyLineSpacing
+                    )
+                }
+            case let .code(chip):
+                height += chipHeight(chip, cap: chipCap)
+            }
+        }
+        return height
     }
 }
 
-@MainActor
-enum BodyMeasurer {
-    private static var calibratedSpacing: CGFloat?
-
-    /// One-time calibration: render a single line with zero spacing, read the
-    /// renderer's natural line height, and take the delta to the 21pt spec.
-    static func calibrateLineSpacing() -> CGFloat {
-        if let calibratedSpacing { return calibratedSpacing }
-        let probe = BodyMeasureView(
-            markdown: AttributedString("Hg"),
-            width: Theme.widthCandidates[0],
-            spacing: 0
-        )
-        let natural = NSHostingView(rootView: probe).fittingSize.height
-        let spacing = max(0, Theme.bodyLineHeight - natural)
-        calibratedSpacing = spacing
-        return spacing
-    }
-
-    /// Wrapped body height at `width`, in points, with no line cap.
-    static func height(markdown: AttributedString, width: CGFloat) -> CGFloat {
-        let host = NSHostingView(rootView: BodyMeasureView(markdown: markdown, width: width))
-        let height = host.fittingSize.height
-        return height > 0 ? height : Theme.bodyLineHeight
+extension BodyBlocks {
+    /// Plain text across blocks without owning a BodyBlocks instance.
+    static func plainText(of blocks: [Block]) -> String {
+        blocks.map(\.plainText).joined(separator: " ")
     }
 }

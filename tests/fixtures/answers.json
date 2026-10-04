@@ -1,0 +1,32 @@
+{
+  "questions": [
+    {
+      "title": "deploy: env",
+      "text": "Which environment should receive build 4211?",
+      "buttons": [
+        "Staging",
+        "Production"
+      ],
+      "default": 2
+    },
+    {
+      "title": "deploy: confirm",
+      "text": "Confirm the **Production** deploy?",
+      "buttons": [
+        "No",
+        "Yes"
+      ],
+      "default": 2,
+      "give_up_after": 42
+    },
+    {
+      "title": "deploy: notes",
+      "text": "Add a release note?",
+      "buttons": [
+        "Skip",
+        "Add note"
+      ],
+      "default": 2
+    }
+  ]
+}

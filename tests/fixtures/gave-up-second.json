@@ -1,0 +1,7 @@
+{
+  "questions": [
+    {"title": "deploy: env", "text": "Which environment?", "buttons": ["Staging", "Production"]},
+    {"title": "deploy: bound", "text": "This one expires.", "buttons": ["No", "Yes"], "give_up_after": 2},
+    {"title": "deploy: never", "text": "Never reached.", "buttons": ["No", "Yes"]}
+  ]
+}

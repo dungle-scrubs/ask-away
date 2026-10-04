@@ -15,7 +15,7 @@ enum Theme {
     static let panelBase = NSColor(srgbRed: 0x0B / 255.0, green: 0x0F / 255.0, blue: 0x16 / 255.0, alpha: 1)
     static let textBody = NSColor(srgbRed: 0xF2 / 255.0, green: 0xF7 / 255.0, blue: 0xFB / 255.0, alpha: 1)
     static let textCode = NSColor(srgbRed: 0xCF / 255.0, green: 0xE9 / 255.0, blue: 0xF2 / 255.0, alpha: 1)
-    /// Reserved token (section 0); defined so the table has one owner.
+    /// List markers and other quiet body ink (section 11).
     static let textSecondary = NSColor(srgbRed: 0x9F / 255.0, green: 0xB4 / 255.0, blue: 0xC1 / 255.0, alpha: 1)
     static let buttonDarkLabel = NSColor(srgbRed: 0x06 / 255.0, green: 0x21 / 255.0, blue: 0x26 / 255.0, alpha: 1)
     static let buttonDarkLabelDisabled = NSColor(srgbRed: 0x66 / 255.0, green: 0x90 / 255.0, blue: 0x99 / 255.0, alpha: 1)
@@ -27,8 +27,12 @@ enum Theme {
     static let accentSwiftUI = Color(nsColor: accent)
     static let textBodySwiftUI = Color(nsColor: textBody)
     static let textCodeSwiftUI = Color(nsColor: textCode)
+    static let textSecondarySwiftUI = Color(nsColor: textSecondary)
     static let buttonDarkLabelSwiftUI = Color(nsColor: buttonDarkLabel)
+    /// Inline code span chip: white 5% (section 2).
     static let chipFillSwiftUI = Color.white.opacity(0.05)
+    /// Code block chip fill: white 6% (section 11).
+    static let codeChipFillSwiftUI = Color.white.opacity(0.06)
 
     // MARK: Typography (section 3)
 
@@ -36,7 +40,9 @@ enum Theme {
     static let metadataKerning: CGFloat = 0.3
     static let bodyFont = NSFont.systemFont(ofSize: 15, weight: .regular)
     static let codeFont = NSFont.monospacedSystemFont(ofSize: 13.5, weight: .regular)
+    static let codeBlockFont = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
     static let bodyLineHeight: CGFloat = 21
+    static let codeBlockLineHeight: CGFloat = 16
     static let bodyKerning: CGFloat = -0.1
     static let buttonGhostFont = NSFont.systemFont(ofSize: 13, weight: .medium)
     static let buttonDefaultFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
@@ -45,8 +51,9 @@ enum Theme {
     static let metadataSwiftUIFont = Font(metadataFont)
     static let bodySwiftUIFont = Font(bodyFont)
     static let codeSwiftUIFont = Font(codeFont)
+    static let codeBlockSwiftUIFont = Font(codeBlockFont)
 
-    // MARK: Layout (sections 1, 4, 5, 6)
+    // MARK: Layout (sections 1, 4, 5, 6, 11, 12)
 
     static let panelCut: CGFloat = 14
     static let buttonCut: CGFloat = 7
@@ -61,18 +68,44 @@ enum Theme {
     static let buttonMinWidth: CGFloat = 64
     static let buttonHPadding: CGFloat = 16
     static let drainLineHeight: CGFloat = 2
-    static let maxBodyLines = 4
-    /// Drain line spans the full inner width: panel width minus the bottom-right cut.
-    static var drainLineWidth: CGFloat { panelCut }
+    /// Gap between stacked body blocks; also the list-to-neighbor gap (section 11).
+    static let blockGap: CGFloat = 10
+    /// Space between list items (section 11).
+    static let listItemSpacing: CGFloat = 4
+    /// List marker column and the text hang measured from the region's left edge (section 11).
+    static let listMarkerWidth: CGFloat = 14
+    static let listHang: CGFloat = 16
+    /// Blockquote stripe and text indent from the stripe (section 11).
+    static let quoteStripeWidth: CGFloat = 2
+    static let quoteIndent: CGFloat = 12
+    /// Code block chip (section 11).
+    static let codeChipRadius: CGFloat = 6
+    static let codeChipPadding: CGFloat = 12
+    static let codeChipLabelGap: CGFloat = 4
+    static let metadataLineHeight: CGFloat = 14
     /// Transparent margin between the window edge and the visual panel rect:
     /// room for the outer glow (r12), the ambient shadow (r20 + 4pt offset),
     /// and clear of the system's rounded-window edge treatment.
     static let windowMargin: CGFloat = 28
 
+    // MARK: Caps (sections 1, 11)
+
+    /// Body region cap: fraction of the target screen's visibleFrame height.
+    static let bodyCapFraction: CGFloat = 0.36
+    /// Whole-panel hard cap: fraction of the target screen's visibleFrame height.
+    static let panelCapFraction: CGFloat = 0.52
+    /// Code block chip internal height cap: fraction of visibleFrame height (section 11).
+    static let codeChipCapFraction: CGFloat = 0.25
+
     // MARK: Width rule (section 1)
 
     static let widthCandidates: [CGFloat] = [340, 420, 520]
     static let twoLineBudget: CGFloat = 2 * bodyLineHeight
+
+    // MARK: Buttons and the wrapped second row (sections 5, 12)
+
+    static let secondRowGap: CGFloat = 8
+    static let wrappedRowExtra: CGFloat = buttonRowHeight + secondRowGap
 
     // MARK: Elevation (section 4)
 
@@ -84,7 +117,7 @@ enum Theme {
     static let ambientOpacity: Float = 0.35
     static let ambientOffset = CGSize(width: 0, height: 4)
 
-    // MARK: Motion (section 7)
+    // MARK: Motion (sections 7, 12)
 
     static let entranceDuration: TimeInterval = 0.18
     static let exitDuration: TimeInterval = 0.14
@@ -92,8 +125,18 @@ enum Theme {
     static let reduceMotionExitDuration: TimeInterval = 0.10
     static let hoverCrossfade: TimeInterval = 0.12
     static let drainCrossfade: TimeInterval = 0.30
+    static let stepTransitionDuration: TimeInterval = 0.18
+    static let stepReduceMotionDuration: TimeInterval = 0.10
+    /// Incoming step content rises this many points into place (section 12).
+    static let stepRise: CGFloat = 2
     /// CubicBezier(0.2, 0.8, 0.2, 1), the entrance and exit curve.
     static let mainCurve = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)
+
+    /// Fixed chrome height under section 1: 18 top + 14 metadata + 10 + 18 +
+    /// 30 button row + 20 bottom. A wrapped second button row adds 38pt.
+    static func chromeHeight(wrappedRows: Bool) -> CGFloat {
+        110 + (wrappedRows ? wrappedRowExtra : 0)
+    }
 
     // MARK: Countdown ramp (section 2)
 
