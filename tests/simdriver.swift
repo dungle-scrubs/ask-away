@@ -327,7 +327,7 @@ private enum Simulator {
         }
     }
 
-    private static func postKey(_ keyCode: UInt16, characters: String) {
+    private static func postKey(_ keyCode: UInt16, characters: String, modifiers: NSEvent.ModifierFlags = []) {
         guard let panel = currentPanel() else {
             FileHandle.standardError.write(Data("simdriver: no panel for key\n".utf8))
             exit(1)
@@ -335,7 +335,7 @@ private enum Simulator {
         guard let event = NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,
-            modifierFlags: [],
+            modifierFlags: modifiers,
             timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: panel.windowNumber,
             context: nil,
@@ -348,6 +348,81 @@ private enum Simulator {
             exit(1)
         }
         NSApp.postEvent(event, atStart: false)
+    }
+
+    /// A click on an arbitrary view (buttons and the answer field alike).
+    private static func click(view: NSView) {
+        guard let panel = currentPanel() else {
+            FileHandle.standardError.write(Data("simdriver: no panel for click\n".utf8))
+            exit(1)
+        }
+        let center = view.convert(CGPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+        for type: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
+            guard let mouse = NSEvent.mouseEvent(
+                with: type,
+                location: center,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: panel.windowNumber,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: 1
+            ) else {
+                FileHandle.standardError.write(Data("simdriver: mouse event creation failed\n".utf8))
+                exit(1)
+            }
+            NSApp.postEvent(mouse, atStart: false)
+        }
+    }
+
+    /// A quiet point on the panel background: the left padding gutter at
+    /// mid height (panel-local x=10), the point the v0.1.1 drag driver
+    /// measured as the plain drag surface.
+    private static func quietPoint() -> CGPoint? {
+        guard let panel = currentPanel(), let root = panel.contentView else { return nil }
+        return CGPoint(x: Theme.windowMargin + 10, y: root.bounds.height / 2)
+    }
+
+    private static func postMouseEvent(_ type: NSEvent.EventType, at location: CGPoint) {
+        guard let panel = currentPanel() else { return }
+        guard let mouse = NSEvent.mouseEvent(
+            with: type,
+            location: location,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: panel.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ) else { return }
+        NSApp.postEvent(mouse, atStart: false)
+    }
+
+    /// Write the live field/keyboard state to a file for suite assertions:
+    /// first responder kind, field focus, live field value, editor presence.
+    private static func writeProbe(to path: String) {
+        guard let panel = currentPanel(), let root = panel.contentView as? PanelRootView else {
+            try? "{\"error\":\"no panel\"}".write(toFile: path, atomically: true, encoding: .utf8)
+            return
+        }
+        let responder = panel.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        let responderTitle = (panel.firstResponder as? NSButton)?.title ?? ""
+        let field = root.answerField
+        let payload: [String: Any] = [
+            "firstResponder": responder,
+            "responderTitle": responderTitle,
+            "fieldFocused": field?.isFocused(in: panel) ?? false,
+            "fieldValue": field?.liveStringValue ?? "",
+            "hasEditor": field?.textField.currentEditor() != nil,
+            "isEditorFocused": field.map { $0.isFocused(in: panel) } ?? false,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: payload),
+           let text = String(data: data, encoding: .utf8)
+        {
+            try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        }
     }
 
     private static func click(_ button: ChamferButton) {
@@ -380,6 +455,54 @@ private enum Simulator {
 
     private static func perform(_ action: String) {
         switch action {
+        case _ where action.hasPrefix("probe:"):
+            writeProbe(to: String(action.dropFirst("probe:".count)))
+        case "field":
+            if let root = currentPanel()?.contentView as? PanelRootView, let field = root.answerField {
+                click(view: field)
+            } else {
+                FileHandle.standardError.write(Data("simdriver: no answer field\n".utf8))
+                exit(1)
+            }
+        case "tab":
+            postKey(48, characters: "\t")
+        case "shifttab":
+            postKey(48, characters: "\t", modifiers: .shift)
+        case "clickbg":
+            if let point = quietPoint() {
+                postMouseEvent(.leftMouseDown, at: point)
+                postMouseEvent(.leftMouseUp, at: point)
+            }
+        case "drag":
+            if let point = quietPoint() {
+                postMouseEvent(.leftMouseDown, at: point)
+                postMouseEvent(.leftMouseDragged, at: CGPoint(x: point.x + 40, y: point.y - 30))
+                postMouseEvent(.leftMouseUp, at: CGPoint(x: point.x + 40, y: point.y - 30))
+            }
+        case _ where action.hasPrefix("type:"):
+            let text = String(action.dropFirst("type:".count))
+            for character in text {
+                postKey(0, characters: String(character))
+            }
+        case _ where action.hasPrefix("paste:"):
+            // Drive the editor's real paste: method (pasteboard read plus
+            // the single-line rejection path). Posted command-modified key
+            // events do not route to field-editor bindings (measured), so
+            // the HID path is exercised separately by the real-event driver.
+            let text = String(action.dropFirst("paste:".count))
+                .replacingOccurrences(of: "\\n", with: "\n")
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            if let root = currentPanel()?.contentView as? PanelRootView,
+               let editor = root.answerField?.textField.currentEditor() as? NSTextView {
+                editor.paste(nil)
+            }
+        case "modkeyc":
+            postKey(8, characters: "c", modifiers: .command)
+        case "modkeyo":
+            postKey(31, characters: "o", modifiers: .option)
+        case "modkeyctrl":
+            postKey(8, characters: "c", modifiers: .control)
         case "close":
             if let root = currentPanel()?.contentView as? PanelRootView, let button = root.closeButton {
                 click(button)
