@@ -42,10 +42,10 @@ identity must never depend on what the user had open, so appearance is locked
 ```
 +--------------------------------------------------+
 | ▲14pt cut (top-left)                             |
-|  metadata row                  countdown "42s"   |  18pt top pad
+|  metadata row                       2/3 [ X ]    |  18pt top pad
 |  body text, 1-2 sentences,                       |
 |  wraps, block markup (§11)                       |  10pt above, 18pt below
-|              [ ghost ] [ ghost ] [ FILLED ]      |  row right-aligned
+|  42s         [ ghost ] [ ghost ] [ FILLED ]      |  row right-aligned
 | ▓▓▓▓▓▓▓▓▓▓▓▓▓▓__________ drain line (2pt)        |
 |                              (bottom-right cut)  |
 +--------------------------------------------------+
@@ -53,9 +53,12 @@ identity must never depend on what the user had open, so appearance is locked
 
 - Base grid: 4pt. Horizontal padding 20pt. Top padding 18pt. Bottom padding
   20pt (measured to the drain line, not the panel edge).
-- Metadata row: full width, title left, countdown right (when a bound is set),
-  baseline-aligned, one line, tail-truncated with ellipsis. In a sequence
-  (§12) the step indicator joins the right side.
+- Metadata row: title left, step indicator `k/n` right in a sequence (§12),
+  baseline-aligned, one line, tail-truncated with ellipsis. Reserve space
+  at the top right for the Close control: subtract an additional **32pt**
+  from the metadata row's available width.
+- Countdown: lower left, above the drain line's left origin; separate from
+  metadata and answer buttons. A step without a bound hides it.
 - Body block: full width minus padding, rendered as block markup per §11;
   height caps at **36% of the screen's visible frame height**, beyond which
   the body scrolls internally (no ellipsis).
@@ -65,7 +68,9 @@ identity must never depend on what the user had open, so appearance is locked
 **Sizing** (amended by §11-§12). Width is fixed per invocation: default
 **420pt**, clamped to [**340pt, 520pt**]. Pick the smallest of
 340 / 420 / 520 at which the body fits in 2 lines (measure the rendered
-block stack at the body style); body that still exceeds 2 lines grows the
+block stack at the body style, using **panel width minus 40pt** for both
+width selection and natural stack height, exactly as the body renders);
+body that still exceeds 2 lines grows the
 height instead, capped at the body maximum, then scrolls internally -
 tail-truncation with ellipsis is retired. 1-2 sentence bodies land at 420pt.
 Body maximum: **36% of the target screen's `visibleFrame.height`**, measured
@@ -83,7 +88,8 @@ visible frame: body cap 324pt, panel cap 468pt; a 500pt body renders as a
 **Placement.** On the screen containing the pointer
 (`NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }`),
 horizontally centered, top edge at **42% of screen height** (slightly above
-center). Never reposition after appearing.
+center). Never reposition automatically after appearing; background dragging
+(§10) moves the panel only in response to the human.
 
 ## 2. Color
 
@@ -149,7 +155,7 @@ time is running out.
 | Role | Face | Size | Weight | Line height | Tracking |
 | --- | --- | --- | --- | --- | --- |
 | Metadata line | SF Mono (`NSFont.monospacedSystemFont`) | 11pt | 500 (medium) | 14pt | +0.3pt |
-| Countdown seconds | SF Mono, same row, right | 11pt | 500 | 14pt | +0.3pt, tabular |
+| Countdown seconds | SF Mono, lower left above drain origin | 11pt | 500 | 14pt | +0.3pt, tabular |
 | Body | SF Pro Text | 15pt | 400 | 21pt (1.4) | -0.1pt |
 | Body `**strong**` | SF Pro Text | 15pt | 600 | 21pt | -0.1pt |
 | Body `*em*` | SF Pro Text | 15pt | 400, italic | 21pt | -0.1pt |
@@ -208,6 +214,19 @@ stroke, shadow shape (see §10).
 - Batch mode (§12): up to 4 buttons per question; when the row exceeds the
   inner width it wraps to a second right-aligned row (§12 owns the rule).
 
+### Close control (amended v0.2.0)
+
+- A visible X at the top right uses the ghost-button colors and the same
+  diagonal chamfers as the answer buttons. Its full hit target is
+  **28 x 28pt**, inset **12pt** from the visual panel's top and right edges.
+- VoiceOver exposes an `AXButton` labeled **"Close"**. The control consumes
+  its own mouse down so pressing it never starts a background drag.
+- Close dismisses a single ask with stdout `CLOSED`, exit **4**. Closing
+  leaves the decision unanswered and supplies no approval. The caller takes
+  no default or best-effort recommendation and re-asks in the session UI.
+- Escape remains `CANCELED`, exit **2**. The AppleScript fallback cannot
+  distinguish close from cancellation and keeps `CANCELED`, exit **2**.
+
 ## 6. Countdown drain line
 
 - Geometry: **2pt tall**, along the bottom edge, spanning from the left edge
@@ -215,10 +234,13 @@ stroke, shadow shape (see §10).
   Drawn just inside the border.
 - Behavior: anchored at the left; the right endpoint retreats leftward.
   Width = `remaining fraction x (W - 14pt)`, recomputed continuously
-  (display link, ~30Hz while visible; the line is the only per-frame work).
+  (display link, ~30Hz while visible). The same tick computes the shared
+  line-and-text ramp color.
 - Color: the §2 ramp as a function of remaining fraction; the "42s" seconds
-  text in the metadata row adopts the same color, so line and number always
-  agree. Seconds render as an integer, ceiling of remaining.
+  text at the lower left adopts the same color, so line and number always
+  agree. In panel-local coordinates the countdown host is **x = 20pt,
+  y = 4pt, height = 14pt**, with leading alignment, above the drain origin.
+  Keep the §3 mono style. Seconds render as an integer, ceiling of remaining.
 - The drain line is informational motion, not decoration: it survives
   Reduce Motion (§7).
 - At 0 the panel fades out, stdout prints `GAVE-UP`, exit 3.
@@ -240,11 +262,15 @@ glitches.
 - **Entrance:** opacity 0 -> 1 and scale 0.98 -> 1.0 (anchor: center),
   **180ms**, `CubicBezier(0.2, 0.8, 0.2, 1)` (fast ease-out). Runs once on
   orderFront.
-- **Exit (answer, cancel, or give-up):** opacity -> 0 and scale -> 1.01,
+- **Exit (answer, cancel, close, or give-up):** opacity -> 0 and scale -> 1.01,
   **140ms**, same curve, then close.
 - **Hover / focus transitions:** border and fill colors crossfade over
-  **120ms** ease-out. The drain line's color steps crossfade over 300ms;
-  its width moves continuously.
+  **120ms** ease-out.
+- **Countdown ramp (amended v0.2.0):** continuously interpolate the §2 ramp
+  at ~30Hz and apply the same target hue to line and seconds text on each
+  tick. Set the line color without a separate Core Animation crossfade;
+  both channels stay synchronized while the hue changes smoothly. The
+  line's width moves continuously.
 - **Step transition (§12):** the content region (metadata row, body, button
   row) crossfades over **180ms**, main curve, with the incoming content
   rising **2pt** into place. Chamfer, border, glow, and drain line persist
@@ -263,13 +289,15 @@ glitches.
   worst-case translucent backdrop; non-text indicators (border, drain ramp)
   exceed the 3:1 UI-component floor. Disabled states are exempt (inactive
   controls) but still legible.
-- Hit targets: 30 x >=64pt per §5, no missed-click tolerance games.
+- Hit targets: 30 x >=64pt for answers and at least 28 x 28pt for Close
+  per §5, no missed-click tolerance games.
 - VoiceOver:
   - Panel (`NSPanel`) exposes `role = .window`, label = the `--title` string,
     so the announcement is "askaway: deploy to prod?, window".
   - Body is a static text element carrying the **plain-text** rendering
     (markdown syntax stripped, emphasis preserved as traits).
-  - Each button is an `AXButton` with its label as the title.
+  - Each answer button is an `AXButton` with its label as the title. Close
+    is an `AXButton` labeled "Close".
   - The panel's `defaultButtonCell` is the default button, so VoiceOver and
     the key plumbing share one source of truth.
   - Countdown: a static text element ("42 seconds remaining"), `AXValue`
@@ -391,19 +419,19 @@ readable:
   step 1 and fail at step 3.
 - **One window per invocation.** No singleton, no window reuse, no queue.
   Timers/display link invalidated on close; the cascade registry entry
-  removed on every exit path (answer, cancel, give-up, crash-safe via pid
+  removed on every exit path (answer, cancel, close, give-up, crash-safe via pid
   staleness).
-- **Movable by its background (amended v0.1.1).** The panel drags by any
+- **Movable by its background (amended v0.2.0).** The panel drags by any
   non-interactive surface: body text, metadata row, quiet bands, and
-  padding - everything except buttons and links, which consume their own
-  clicks. The transparent margin around the visual panel (the elevation
-  room described in §4) is not draggable - clicks there fall through as
-  before. AppKit's `isMovableByWindowBackground` engages only erratically
-  on this shaped, clear borderless window (measured: near-edge points
-  dragged, mid-panel points dead-ended at identical hit chains), so the
-  drag is explicit: the root view forwards unconsumed mouse downs to
-  `NSWindow.performDrag(with:)`, which runs the window-move loop until
-  mouseUp. A plain click still makes key.
+  padding. Answer buttons, Close, and links consume their own clicks. The
+  transparent margin around the visual panel (the elevation room described
+  in §4) is not draggable; clicks there fall through. The root view starts
+  a local AppKit `NSWindow.trackEvents` session for unconsumed mouse downs.
+  Track left-dragged and left-mouse-up events, consuming scroll events
+  during the drag. Each drag event calls `setFrameOrigin` from the original
+  window origin plus displacement from the original pointer anchor; stop
+  on mouse up. Use no global monitor or event tap. A plain click still
+  makes key.
 - **Per-tick isolation (amended v0.1.1).** The countdown seconds text and
   its ramp color live in their own observable: a drain tick re-renders only
   the seconds text - never the title, the step indicator, or the body - so
@@ -549,17 +577,17 @@ one line of compact JSON, UTF-8, trailing newline:
 ```
 
 - `results[i].index`: 0-based question index.
-- `status`: `answered` | `canceled` | `gave-up`. `answer` is present iff
-  `answered`, and carries the button text verbatim (a button labeled
+- `status`: `answered` | `canceled` | `closed` | `gave-up`. `answer` is
+  present iff `answered`, and carries the button text verbatim (a button labeled
   `Cancel` answers `"Cancel"`).
 - Invariants: entries appear in order for every question that was presented;
   entries before `stopped_at` are all `answered`; `results.count ==
   stopped_at + 1` when stopped early (the stopped entry included);
   `stopped_at == questions.count` when every question was answered.
-- Exit codes: **0** all answered; **2** stopped on cancel/Escape; **3**
-  stopped on gave-up; **1** usage/parse/validation error.
-- Partial answers survive a mid-sequence stop: cancel or give-up at step k
-  returns every answer collected before k. (A SIGKILL returns nothing - the
+- Exit codes: **0** all answered; **2** stopped on Escape; **3** stopped on
+  gave-up; **4** stopped on Close; **1** usage/parse/validation error.
+- Partial answers survive a mid-sequence stop: Escape, Close, or give-up at
+  step k returns every answer collected before k. (A SIGKILL returns nothing - the
   process is gone; that is outside the contract.)
 
 **Panel behavior.**
@@ -571,13 +599,10 @@ one line of compact JSON, UTF-8, trailing newline:
   2 lines (else 520pt); height = the maximum per-question height under §1's
   formula and caps. Content is top-anchored, buttons bottom-anchored; a
   short question leaves quiet space rather than resizing the window.
-- **Step indicator.** Metadata row right side: `k/n` - current step 1-based,
-  plain integers - then ` · ` (U+00B7 middle dot with one plain space on
-  each side), then the countdown: **`2/3 · 42s`**. No bound on the current
-  step: `2/3` alone. A single-question file renders no indicator. The
-  `k/n` segment holds `accent` regardless of the ramp; only the seconds
-  segment adopts the §2 ramp color (§6's line-and-number agreement is
-  unchanged).
+- **Step indicator.** Metadata row right side: **`2/3`**, current step
+  1-based, plain integers, always `accent`. The indicator contains only
+  `k/n`; the countdown remains separate at the lower left above the drain
+  origin (§6). A single-question file renders no indicator.
 - **Transition.** Each step change crossfades the content region (metadata
   row, body, button row) per §7: **180ms**, main curve, incoming content
   rising **2pt**. No window close/respawn, no resize, no chrome animation.
@@ -602,11 +627,14 @@ one line of compact JSON, UTF-8, trailing newline:
 - **Escape at step k** (0-based): the sequence stops at that step. `results`
   carries answers 0..k-1 plus entry `k` with `status: "canceled"`,
   `stopped_at = k`, exit **2**.
+- **Close at step k** (0-based): the sequence stops at that step. `results`
+  carries answers 0..k-1 plus entry `k` with `status: "closed"`,
+  `stopped_at = k`, exit **4**. The stopped entry has no `answer`; earlier
+  answers remain intact. The caller re-asks in the session UI per §5.
 - **A button labeled `Cancel` answers only its own question** and the
-  sequence continues. Canceling the whole sequence is Escape's job, full
-  stop. (Single-question mode keeps its legacy mapping - a clicked `Cancel`
-  button is `CANCELED`, exit 2 - because that contract is byte-identical;
-  the asymmetry is deliberate.)
+  sequence continues. Escape and Close stop the whole sequence.
+  Single-question mode keeps its legacy mapping: a clicked `Cancel` button
+  is `CANCELED`, exit 2. The asymmetry is deliberate.
 - **Give-up at step k**: entry `k` is `gave-up`, `stopped_at = k`, exit
   **3**; earlier answers are in `results`.
 
