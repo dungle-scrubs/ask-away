@@ -6,8 +6,7 @@ description:
   may be in any app rather than watching the agent's terminal. Use when a
   decision cannot wait silently, when the session owner asked for on-screen
   interaction, or when a terminal-blocking question tool would go unseen.
-  Answers arrive as the button text, CANCELED, or GAVE-UP once a bound
-  expires. Not for opening URLs (open-in-browser) or driving windows that
+  Not for opening URLs (open-in-browser) or driving windows that
   already exist (peekaboo)."
 ---
 
@@ -53,6 +52,11 @@ question. The recommended answer is the dialog's default button.
 | button text | 0 | the human chose | act on it |
 | `CANCELED` | 2 | the human declined the framing | stop, or re-ask in prose |
 | `GAVE-UP` | 3 | the bound expired unanswered | rung 3, below |
+| `CLOSED` | 4 | the human dismissed the native panel | re-ask in the session UI |
+
+Closing leaves the decision unanswered and supplies no approval. Take no
+default or best-effort recommendation after `CLOSED`; re-ask in the session
+UI. Keep answers already collected in a batch.
 
 ## Body text scope (markdown)
 
@@ -86,17 +90,20 @@ printf '%s' "$doc" | <skill-dir>/scripts/ask.sh --questions-file -
   `ask-away: questions[2].default must be 1..3, got 7`.
 - stdout at sequence end is one line of JSON:
   `{"results":[{"index":0,"status":"answered","answer":"Deploy"},{"index":1,"status":"canceled"}],"stopped_at":1}`.
-  `status` is `answered` (with `answer`) | `canceled` | `gave-up`;
+  `status` is `answered` (with `answer`) | `canceled` | `closed` | `gave-up`;
   `stopped_at` is the 0-based stop step, or the question count when every
   question was answered. Exit codes: 0 all answered, 2 stopped on
-  Escape/cancel, 3 stopped on a step's bound, 1 usage or validation.
+  Escape, 3 stopped on a step's bound, 4 stopped on Close, 1 usage or
+  validation. Close at step k appends `{"index":k,"status":"closed"}` and
+  sets `stopped_at` to k.
 - Partial answers survive a mid-sequence stop: answers collected before the
   stopped step are in `results`.
-- The step indicator reads `k/n · 42s`; the countdown and bound restart per
+- The upper-right step indicator reads `k/n`; the lower-left countdown
+  reads `42s` above the drain origin. The countdown and bound restart per
   question; the beep plays once per sequence and any question's `no_beep`
   silences it.
 - A button labeled `Cancel` answers only its own step and the sequence
-  continues. Escape stops the whole sequence.
+  continues. Escape or Close stops the whole sequence.
 
 **stdin pitfall:** with `--questions-file -` the document is read to EOF
 before the panel appears - a caller that never closes stdin blocks the ask
@@ -105,8 +112,9 @@ forever. Build the document, close the pipe, then wait.
 ## Output
 
 **Artifact:** none; this skill writes no file. **Where:** `ask.sh` prints
-the clicked button's text, `CANCELED`, or `GAVE-UP` on stdout (exit 0, 2, or
-3) - or the batch JSON above - and the agent reports that answer in chat.
+the clicked button's text, `CANCELED`, `GAVE-UP`, or `CLOSED` on stdout
+(exit 0, 2, 3, or 4) - or the batch JSON above - and the agent reports that
+answer in chat.
 **Contains:** the human's choice only; details and tables stay in the
 agent's chat reply, never in the dialog. **Not:** an authorization the
 caller did not already hold; an unanswered ask stays unanswered (the
@@ -138,9 +146,10 @@ between steps and holds one cascade slot.
 
 When no binary is on PATH (next to the script either), `ask.sh` falls back
 to the same flags through AppleScript `display dialog`, which needs no
-install and no extra permission. The stdout, exit codes, and single-question
-flag surface are identical in both paths; the fallback cannot walk a
-questions file (`--questions-file` there exits 1 with a message), and it
+install and no extra permission. The single-question flags are the same,
+but closing the AppleScript fallback returns `CANCELED` (exit 2): that
+renderer cannot distinguish close from cancellation. The fallback cannot
+walk a questions file (`--questions-file` there exits 1 with a message), and it
 renders plain text only. The native binary is faster to appear and visually
 distinct from a system dialog.
 

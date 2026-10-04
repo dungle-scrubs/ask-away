@@ -72,14 +72,11 @@ enum BodyStyle {
     }
 }
 
-/// The metadata row: title left; step indicator and countdown right
-/// (sections 1 and 12). Baseline-aligned, one line, tail-truncated. The
-/// countdown text observes CountdownModel alone, so the per-tick drain
-/// updates never re-render the title or the indicator.
+/// Title and step identity share one baseline. Countdown ticks are hosted
+/// separately from this row.
 struct MetadataContentView: View {
     let title: String
     @ObservedObject var model: StepModel
-    @ObservedObject var countdown: CountdownModel
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -94,52 +91,40 @@ struct MetadataContentView: View {
             if model.indicator != nil {
                 indicatorView
                     .layoutPriority(1)
-            } else if countdown.secondsLeft != nil {
-                CountdownView(countdown: countdown)
-                    .layoutPriority(1)
             }
         }
         .frame(height: Theme.metadataHeight, alignment: .center)
     }
 
-    /// "2/3 · 42s": the k/n segment holds accent regardless of the ramp; only
-    /// the seconds segment adopts the ramp color (section 12). No bound on
-    /// the current step renders the indicator alone.
     private var indicatorView: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 0) {
-            Text("\(model.stepIndex)/\(model.stepCount)")
-            Text(" \u{00B7} ")
-            CountdownView(countdown: countdown)
-        }
-        .font(Theme.metadataSwiftUIFont)
-        .kerning(Theme.metadataKerning)
-        .monospacedDigit()
-        .foregroundStyle(Theme.accentSwiftUI)
-        .lineLimit(1)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("question \(model.stepIndex) of \(model.stepCount)")
-        .accessibilityValue(accessibilityValue)
-    }
-
-    private var accessibilityValue: String {
-        var value = "\(model.stepIndex)/\(model.stepCount)"
-        if let seconds = countdown.secondsLeft {
-            value += " \u{00B7} \(seconds)s"
-        }
-        return value
+        Text("\(model.stepIndex)/\(model.stepCount)")
+            .font(Theme.metadataSwiftUIFont)
+            .kerning(Theme.metadataKerning)
+            .monospacedDigit()
+            .foregroundStyle(Theme.accentSwiftUI)
+            .lineLimit(1)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("question \(model.stepIndex) of \(model.stepCount)")
+            .accessibilityValue("\(model.stepIndex)/\(model.stepCount)")
     }
 }
 
 /// The seconds text alone ("42s", ramp color per section 2). Isolated so the
 /// per-tick writes re-render only this view; the AX label keeps the section 8
 /// countdown rule (never announced per tick).
-private struct CountdownView: View {
+struct CountdownView: View {
     @ObservedObject var countdown: CountdownModel
 
     var body: some View {
-        Text("\(countdown.secondsLeft ?? 0)s")
-            .foregroundStyle(countdown.color)
-            .accessibilityLabel("\(countdown.secondsLeft ?? 0) seconds remaining")
+        if let seconds = countdown.secondsLeft {
+            Text("\(seconds)s")
+                .font(Theme.metadataSwiftUIFont)
+                .kerning(Theme.metadataKerning)
+                .monospacedDigit()
+                .foregroundStyle(countdown.color)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel("\(seconds) seconds remaining")
+        }
     }
 }
 
@@ -165,11 +150,11 @@ struct BodyDocumentView: View {
     private func blockView(_ block: BodyBlocks.Block) -> some View {
         switch block {
         case let .paragraph(attr):
-            bodyText(BodyStyle.styled(attr))
+            BodyTextView(attr: attr)
         case let .quote(attr):
             // The stripe is the text's background, not a greedy sibling: it
             // spans exactly the quoted text's height (section 11).
-            bodyText(BodyStyle.styled(attr))
+            BodyTextView(attr: attr)
                 .padding(.leading, Theme.quoteIndent)
                 .background(alignment: .leading) {
                     Rectangle()
@@ -181,14 +166,7 @@ struct BodyDocumentView: View {
         case let .list(rows):
             VStack(alignment: .leading, spacing: Theme.listItemSpacing) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    HStack(alignment: .firstTextBaseline, spacing: Theme.listHang - Theme.listMarkerWidth) {
-                        Text(row.marker)
-                            .font(Theme.bodySwiftUIFont)
-                            .foregroundStyle(Theme.textSecondarySwiftUI)
-                            .frame(width: Theme.listMarkerWidth, alignment: .leading)
-                        bodyText(BodyStyle.styled(row.text))
-                            .frame(width: width - Theme.listHang, alignment: .topLeading)
-                    }
+                    ListRowView(row: row, width: width)
                 }
             }
         case let .code(chip):
@@ -196,13 +174,34 @@ struct BodyDocumentView: View {
         }
     }
 
-    private func bodyText(_ attr: AttributedString) -> some View {
-        Text(attr)
+}
+
+private struct BodyTextView: View {
+    let attr: AttributedString
+
+    var body: some View {
+        Text(BodyStyle.styled(attr))
             .font(Theme.bodySwiftUIFont)
             .kerning(Theme.bodyKerning)
             .lineSpacing(BodyStyle.bodyLineSpacing)
             .foregroundStyle(Theme.textBodySwiftUI)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct ListRowView: View {
+    let row: BodyBlocks.Row
+    let width: CGFloat
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.listHang - Theme.listMarkerWidth) {
+            Text(row.marker)
+                .font(Theme.bodySwiftUIFont)
+                .foregroundStyle(Theme.textSecondarySwiftUI)
+                .frame(width: Theme.listMarkerWidth, alignment: .leading)
+            BodyTextView(attr: row.text)
+                .frame(width: width - Theme.listHang, alignment: .topLeading)
+        }
     }
 }
 
@@ -293,7 +292,7 @@ enum BodyMeasurer {
 
     /// Wrapped attributed text height at `width` in the real renderer.
     static func textHeight(_ attr: AttributedString, width: CGFloat, kern: CGFloat, lineSpacing: CGFloat) -> CGFloat {
-        let view = Text(attr)
+        let view = Text(BodyStyle.styled(attr))
             .font(Theme.bodySwiftUIFont)
             .kerning(kern)
             .lineSpacing(lineSpacing)
@@ -303,6 +302,10 @@ enum BodyMeasurer {
         let host = NSHostingView(rootView: view)
         let height = host.fittingSize.height
         return height > 0 ? height : Theme.bodyLineHeight
+    }
+
+    static func listRowHeight(_ row: BodyBlocks.Row, width: CGFloat) -> CGFloat {
+        NSHostingView(rootView: ListRowView(row: row, width: width)).fittingSize.height
     }
 
     /// Natural (unwrapped) verbatim text height, for code chip content.
@@ -340,12 +343,7 @@ enum BodyMeasurer {
             case let .list(rows):
                 for (rowIndex, row) in rows.enumerated() {
                     if rowIndex > 0 { height += Theme.listItemSpacing }
-                    height += textHeight(
-                        row.text,
-                        width: width - Theme.listHang,
-                        kern: Theme.bodyKerning,
-                        lineSpacing: BodyStyle.bodyLineSpacing
-                    )
+                    height += listRowHeight(row, width: width)
                 }
             case let .code(chip):
                 height += chipHeight(chip, cap: chipCap)
@@ -406,7 +404,7 @@ enum LinkRects {
                     if rowIndex > 0 { top += Theme.listItemSpacing }
                     let rowWidth = width - Theme.listHang
                     rects += textKitRects(attr: row.text, layoutWidth: rowWidth, x: Theme.listHang, blockTop: top, viewHeight: viewHeight, flipped: flipped)
-                    top += BodyMeasurer.textHeight(row.text, width: rowWidth, kern: Theme.bodyKerning, lineSpacing: BodyStyle.bodyLineSpacing)
+                    top += BodyMeasurer.listRowHeight(row, width: width)
                 }
             case let .code(chip):
                 // Verbatim code carries no link runs; the pinned chip height

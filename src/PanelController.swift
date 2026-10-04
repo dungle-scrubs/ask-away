@@ -33,6 +33,7 @@ final class PanelRootView: NSView {
     private(set) var bodyDocument: NSHostingView<BodyDocumentView>?
     private(set) var metadataHost: NSHostingView<MetadataContentView>?
     private(set) var buttons: [ChamferButton] = []
+    private(set) var closeButton: ChamferButton?
     /// Body link rectangles in document-view coordinates, for the mouse-moved
     /// cursor check (v0.1.1 amendment, section 8).
     private var linkRects: [NSRect] = []
@@ -47,7 +48,8 @@ final class PanelRootView: NSView {
         bodyWidth: CGFloat,
         bodyRegion: CGFloat,
         buttonRows: [[CGFloat]],
-        buttons: [ChamferButton]
+        buttons: [ChamferButton],
+        closeButton: ChamferButton
     ) {
         wantsLayer = true
         layer?.masksToBounds = false
@@ -109,15 +111,23 @@ final class PanelRootView: NSView {
         let metadataFrame = NSRect(
             x: Theme.horizontalPadding,
             y: panelRect.height - Theme.topPadding - Theme.metadataHeight,
-            width: panelRect.width - 2 * Theme.horizontalPadding,
+            width: panelRect.width - 2 * Theme.horizontalPadding - 32,
             height: Theme.metadataHeight
         )
         let metadata = NSHostingView(
-            rootView: MetadataContentView(title: title, model: model, countdown: countdown)
+            rootView: MetadataContentView(title: title, model: model)
         )
         metadata.frame = metadataFrame
         stack.addSubview(metadata)
         metadataHost = metadata
+
+        closeButton.frame = NSRect(x: panelRect.width - 40, y: panelRect.height - 40, width: 28, height: 28)
+        content.addSubview(closeButton)
+        self.closeButton = closeButton
+
+        let seconds = NSHostingView(rootView: CountdownView(countdown: countdown))
+        seconds.frame = NSRect(x: Theme.horizontalPadding, y: 4, width: 80, height: Theme.metadataHeight)
+        content.addSubview(seconds)
 
         // Body region: the only elastic element (section 1). An explicit
         // NSScrollView so scroller style is forced overlay regardless of the
@@ -205,16 +215,24 @@ final class PanelRootView: NSView {
         return super.hitTest(point)
     }
 
-    /// Movable by its background (v0.1.1 amendment, section 10). Borderless
-    /// panels are not draggable by default, and AppKit's
-    /// isMovableByWindowBackground engages only erratically on this shaped,
-    /// clear window (it worked near the window edges and dead-ended over
-    /// content - frame-verified), so the panel drags explicitly: this root
-    /// view sees a mouseDown only when no interactive control consumed it
-    /// (buttons track their own clicks; a plain click still makes key), and
-    /// `performDrag` runs the window-move loop until mouseUp.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Keep the mouse-down's tracking session in AppKit instead of handing
+    /// this nonactivating, transparent window to the native window-drag loop.
+    /// Controls consume their own mouse-down before it reaches this view.
     override func mouseDown(with event: NSEvent) {
-        window?.performDrag(with: event)
+        guard let window else { return }
+        let origin = window.frame.origin
+        let anchor = window.convertPoint(toScreen: event.locationInWindow)
+        window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp, .scrollWheel], timeout: .greatestFiniteMagnitude, mode: .eventTracking) { next, stop in
+            guard let next else { stop.pointee = true; return }
+            if next.type == .leftMouseUp {
+                stop.pointee = true
+            } else if next.type == .leftMouseDragged {
+                let point = window.convertPoint(toScreen: next.locationInWindow)
+                window.setFrameOrigin(NSPoint(x: origin.x + point.x - anchor.x, y: origin.y + point.y - anchor.y))
+            }
+        }
     }
 
     /// Cursor affordance for markdown links in the body (v0.1.1 amendment,
@@ -252,7 +270,8 @@ final class PanelRootView: NSView {
     private func updateCursor() {
         guard let window else { return }
         let global = NSEvent.mouseLocation
-        let overButton = buttons.contains { button in
+        let controls = buttons + (closeButton.map { [$0] } ?? [])
+        let overButton = controls.contains { button in
             window.convertToScreen(button.convert(button.bounds, to: nil)).contains(global)
         }
         var overLink = false
@@ -355,12 +374,14 @@ final class PanelController {
         case answered(String)
         case canceled
         case gaveUp
+        case closed
 
         var stdout: String {
             switch self {
             case let .answered(text): return text
             case .canceled: return "CANCELED"
             case .gaveUp: return "GAVE-UP"
+            case .closed: return "CLOSED"
             }
         }
 
@@ -369,6 +390,7 @@ final class PanelController {
             case .answered: return 0
             case .canceled: return 2
             case .gaveUp: return 3
+            case .closed: return 4
             }
         }
     }
@@ -483,7 +505,7 @@ final class PanelController {
         var width = Theme.widthCandidates.last!
         for candidate in Theme.widthCandidates {
             let fits = prepared.allSatisfy { step in
-                BodyMeasurer.stackHeight(step.blocks, width: candidate, chipCap: chipCap)
+                BodyMeasurer.stackHeight(step.blocks, width: candidate - 2 * Theme.horizontalPadding, chipCap: chipCap)
                     <= Theme.twoLineBudget + 0.5
             }
             if fits {
@@ -506,7 +528,7 @@ final class PanelController {
                     ))
                 }
             }
-            let natural = BodyMeasurer.stackHeight(prepared[index].blocks, width: width, chipCap: chipCap)
+            let natural = BodyMeasurer.stackHeight(prepared[index].blocks, width: width - 2 * Theme.horizontalPadding, chipCap: chipCap)
             naturalHeights.append(natural)
             prepared[index].naturalHeight = natural
             let wraps = allowWrap && Self.buttonRows(
@@ -616,6 +638,11 @@ final class PanelController {
         panel.isReleasedWhenClosed = false
 
         let buttons = makeButtons(for: steps[0].question)
+        let closeButton = ChamferButton(title: "X", kind: .ghost)
+        closeButton.setAccessibilityLabel("Close")
+        closeButton.setAccessibilityTitle("Close")
+        closeButton.target = self
+        closeButton.action = #selector(closeClicked(_:))
 
         let root = PanelRootView(frame: NSRect(origin: .zero, size: windowFrame.size))
         root.configure(
@@ -627,9 +654,11 @@ final class PanelController {
             bodyWidth: bodyWidth,
             bodyRegion: bodyRegion,
             buttonRows: buttonRows[0],
-            buttons: buttons
+            buttons: buttons,
+            closeButton: closeButton
         )
         panel.contentView = root
+        self.root = root
 
         applyStepChrome(to: panel, buttons: buttons, question: steps[0].question)
 
@@ -642,7 +671,6 @@ final class PanelController {
         }
 
         self.panel = panel
-        self.root = root
     }
 
     /// Make one step's ChamferButtons (section 5 kinds and targets).
@@ -666,6 +694,8 @@ final class PanelController {
         for (button, next) in zip(buttons, buttons.dropFirst()) {
             button.nextKeyView = next
         }
+        buttons.last?.nextKeyView = root?.closeButton
+        root?.closeButton?.nextKeyView = buttons.first
     }
 
     // MARK: Step content (section 12)
@@ -685,7 +715,7 @@ final class PanelController {
             origin: .zero,
             size: CGSize(width: bodyWidth, height: max(step.naturalHeight, 1))
         )
-        root?.metadataHost?.rootView = MetadataContentView(title: step.question.title, model: model, countdown: countdown)
+        root?.metadataHost?.rootView = MetadataContentView(title: step.question.title, model: model)
         root?.updateLinkCursor(blocks: step.blocks, width: bodyWidth, viewHeight: max(step.naturalHeight, 1))
 
         let buttons = makeButtons(for: step.question)
@@ -876,7 +906,8 @@ final class PanelController {
         // on both sides; the line spans that width minus the bottom cut.
         let visualWidth = panelSize.width
         let width = (visualWidth - Theme.panelCut) * CGFloat(fraction)
-        // Width moves continuously; color steps crossfade over 300ms (section 7).
+        // The ramp is already interpolated per tick. Assign its shared color
+        // directly so the line cannot lag behind the seconds text.
         // The line sits just inside the border stroke (section 6): y 1..3.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -884,14 +915,20 @@ final class PanelController {
             rect: CGRect(x: 0, y: 1, width: width, height: Theme.drainLineHeight),
             transform: nil
         )
-        CATransaction.commit()
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(Theme.drainCrossfade)
         drainLayer.fillColor = color.cgColor
         CATransaction.commit()
     }
 
     // MARK: Outcomes
+
+    @objc private func closeClicked(_ sender: ChamferButton) {
+        guard !finished else { return }
+        if isBatch {
+            stopSequence(status: "closed", exitCode: 4)
+        } else {
+            finish(.closed)
+        }
+    }
 
     @objc private func buttonClicked(_ sender: ChamferButton) {
         guard !finished else { return }

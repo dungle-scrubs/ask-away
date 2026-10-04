@@ -99,10 +99,19 @@ struct Question {
                              "stopped_at":N} on stdout.
 
     Single-question output (stdout): the clicked button's text, or CANCELED,
-    or GAVE-UP.
+    GAVE-UP, or CLOSED.
     Exit codes (both modes): 0 answered (batch: every question) | 2 canceled
-    (Escape; batch: sequence stopped) | 3 gave up (batch: a step's bound
-    expired) | 1 usage, parse, or validation error.
+    (Escape or single-question Cancel; batch: sequence stopped on Escape) |
+    3 gave up (batch: a step's bound
+    expired) | 4 closed (Close; batch: sequence stopped) | 1 usage, parse,
+    or validation error.
+
+    Close is the top-right X. Closing supplies no approval or default answer;
+    re-ask in the session UI. Batch Close preserves earlier answers, appends
+    a status "closed" entry, and sets stopped_at to that step's 0-based index.
+    A batch button labeled "Cancel" answers its step; Escape stops the batch.
+    The step indicator is k/n at the upper right; seconds sit at the lower
+    left above the drain origin.
 
     A panel appears over the current app, on the screen holding the pointer,
     and never activates or steals focus. Parallel invocations cascade.

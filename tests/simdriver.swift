@@ -76,7 +76,9 @@ private enum Simulator {
         guard let panel = currentPanel(), let contentView = panel.contentView else { return [] }
         var found: [ChamferButton] = []
         func walk(_ view: NSView) {
-            if let button = view as? ChamferButton { found.append(button) }
+            if let button = view as? ChamferButton, button !== (contentView as? PanelRootView)?.closeButton {
+                found.append(button)
+            }
             for sub in view.subviews { walk(sub) }
         }
         walk(contentView)
@@ -139,6 +141,13 @@ private enum Simulator {
 
     private static func perform(_ action: String) {
         switch action {
+        case "close":
+            if let root = currentPanel()?.contentView as? PanelRootView, let button = root.closeButton {
+                click(button)
+            } else {
+                FileHandle.standardError.write(Data("simdriver: no close button\n".utf8))
+                exit(1)
+            }
         case "escape":
             postKey(53, characters: "\u{1B}")
         case "return":

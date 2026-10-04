@@ -2,7 +2,7 @@
 
 A native macOS prompt that lets coding agents ask the human a question - and get the clicked answer back on stdout. Comes with a matching agent skill.
 
-One process, one question (or a whole sequence), one outcome. The agent invokes `ask-away` with a title, a body, and buttons; a dark neon-edged panel appears over whatever the human is doing, takes Return and Escape without stealing focus from the host app, and the answer comes back as the clicked button's text, `CANCELED`, or `GAVE-UP` - or, in batch mode, one line of JSON walking through every answer.
+One process, one question (or a whole sequence), one outcome. The agent invokes `ask-away` with a title, a body, and buttons; a dark neon-edged panel appears over whatever the human is doing, takes Return and Escape without stealing focus from the host app, and the answer comes back as the clicked button's text, `CANCELED`, `CLOSED`, or `GAVE-UP` - or, in batch mode, one line of JSON walking through every answer.
 
 ![The ask-away panel](docs/panel.png)
 
@@ -68,13 +68,14 @@ Single-question output:
 | button text | 0 | the human chose |
 | `CANCELED` | 2 | Escape, or a button named "Cancel" was activated |
 | `GAVE-UP` | 3 | the bound expired unanswered |
+| `CLOSED` | 4 | the human dismissed the panel with Close; the decision is unanswered |
 | usage message on stderr | 1 | bad flags |
 
 `--help` prints the same reference and exits 0.
 
 ## Question sequences (batch mode)
 
-A questions file walks the human through several questions in one fixed-frame panel; content crossfades between steps and the step indicator reads `2/3 · 42s`:
+A questions file walks the human through several questions in one fixed-frame panel; content crossfades between steps and the step indicator reads `2/3` at the upper right and a separate countdown reads `42s` at the lower left:
 
 ```json
 {
@@ -103,8 +104,8 @@ ask-away --questions-file /tmp/deploy-ask.json
 
 - Schema: 1-10 questions; `title` and `text` required; `buttons` is 2-4 strings; optional `default` (1-based, last button by default), `give_up_after` (seconds, absent = unbounded), `no_beep`. Unknown fields ignored; document capped at 256KiB.
 - Validation runs before anything renders: violations exit 1 naming the entry (`ask-away: questions[2].default must be 1..3, got 7`); malformed JSON exits 1 the same way. Nothing prints on stdout in any error case.
-- Output at sequence end: `{"results":[{"index":0,"status":"answered","answer":"Production"},...],"stopped_at":3}` - `status` is `answered`/`canceled`/`gave-up`, entries appear for every question presented, and partial answers survive a mid-sequence stop.
-- Exit codes: 0 all answered | 2 stopped on Escape | 3 stopped on a step's bound | 1 usage, parse, or validation.
+- Output at sequence end: `{"results":[{"index":0,"status":"answered","answer":"Production"},...],"stopped_at":3}` - `status` is `answered`/`canceled`/`closed`/`gave-up`, entries appear for every question presented, and partial answers survive a mid-sequence stop.
+- Exit codes: 0 all answered | 2 stopped on Escape | 3 stopped on a step's bound | 4 stopped on Close | 1 usage, parse, or validation.
 - Per step: the countdown and bound restart, the drain line resets instantly, and a step without a bound hides them. One beep per sequence, silenced if any question sets `no_beep`.
 - A button labeled `Cancel` answers only its own step; Escape stops the sequence. Up to 4 buttons wrap to a second right-aligned row without shrinking hit targets.
 - stdin note: `--questions-file -` reads to EOF before the panel appears - close the pipe or the ask blocks.
@@ -116,21 +117,23 @@ Batch output codes:
 | one line of batch JSON | 0 | every question answered |
 | one line of batch JSON | 2 | sequence stopped on Escape at step k (`stopped_at = k`) |
 | one line of batch JSON | 3 | sequence stopped on a step's bound at step k |
+| one line of batch JSON | 4 | sequence stopped on Close at step k (`status = "closed"`, `stopped_at = k`) |
 | error on stderr, nothing on stdout | 1 | usage, unreadable path, malformed JSON, or validation |
 
 ## Behavior
 
-- Appears on the screen holding the pointer, horizontally centered, slightly above center; never repositions.
+- Appears on the screen holding the pointer, horizontally centered, slightly above center; never repositions automatically. Drag the panel by its background.
 - Cascades +24pt down-right per concurrent panel (wraps after 6) so parallel agents stay readable.
 - Return triggers the default button; Escape cancels; no other keys are bound.
-- The countdown drain line and the seconds text share one color that ramps cyan -> amber -> red as the bound expires.
+- The top-right X dismisses the panel with `CLOSED` (exit 4). Closing supplies no approval: take no default or best-effort recommendation, and re-ask in the session UI. In a batch, prior answers stay intact and the closed step is appended with `status: "closed"`.
+- The countdown sits at the lower left, above the drain line's origin. The drain line and the seconds text share one color that ramps cyan -> amber -> red as the bound expires.
 - Body markup degrades safely: headings, tables, and thematic breaks render as plain paragraphs; code block content stays verbatim and scrolls internally past a screen-height-proportional cap.
 - VoiceOver: the panel exposes the title, the body reads as plain text, the countdown updates silently, and the default button cell drives Return. In a batch, each step change posts one "Question k of n" announcement.
 - Reduce Motion replaces the entrance, exit, and step-crossfade motion with fades.
 
 ## Skill installation
 
-`skill/` is a self-contained agent skill whose `ask.sh` drives the binary when it is installed and falls back to AppleScript `display dialog` (same flags, same stdout and exit contract) when it is not. Point `install.sh --skill-dir` at your agent's skill directory; common ones:
+`skill/` is a self-contained agent skill whose `ask.sh` drives the binary when it is installed and falls back to AppleScript `display dialog` (same flags; closing the fallback returns `CANCELED`, exit 2, because AppleScript cannot distinguish close from cancellation) when it is not. Point `install.sh --skill-dir` at your agent's skill directory; common ones:
 
 | Agent | Directory |
 |---|---|
