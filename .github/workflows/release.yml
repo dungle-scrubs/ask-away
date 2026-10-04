@@ -1,0 +1,50 @@
+name: Release
+
+# On a v* tag: build the universal binary, ad-hoc sign it, package binary +
+# skill into ask-away.tar.gz, and create the GitHub release with the
+# artifact. Tagging is a human action; this workflow only packages what the
+# tag names.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal binary
+        run: ./build.sh
+
+      - name: Verify both architectures
+        run: lipo -info bin/ask-away | grep -q "x86_64 arm64"
+
+      - name: Ad-hoc sign
+        run: codesign --force --sign - --timestamp=none bin/ask-away
+
+      - name: Package
+        run: |
+          staging="$(mktemp -d)/ask-away"
+          mkdir -p "$staging"
+          cp bin/ask-away "$staging/"
+          cp -R skill "$staging/skill"
+          cp README.md LICENSE "$staging/"
+          tar -czf "ask-away-${{ github.ref_name }}.tar.gz" -C "$(dirname "$staging")" ask-away
+
+      - name: Smoke test the packaged binary
+        run: bin/ask-away --help > /dev/null
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            "ask-away-${{ github.ref_name }}.tar.gz" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # macOS-only product: build the universal binary and smoke-test the CLI
+    # contract on a macOS runner with a real WindowServer.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swiftc --version
+
+      - name: Build universal binary
+        run: ./build.sh
+
+      - name: Verify both architectures
+        run: |
+          lipo -info bin/ask-away
+          lipo -info bin/ask-away | grep -q "x86_64 arm64"
+
+      - name: Smoke test --help
+        run: bin/ask-away --help > /dev/null
+
+      - name: Smoke test usage errors
+        run: |
+          if bin/ask-away --bogus 2>/dev/null; then
+            echo "expected exit 1 for unknown flag" >&2
+            exit 1
+          fi
+
+      - name: Smoke test give-up contract
+        # The runner has a WindowServer, so the panel really appears and the
+        # bound really expires: GAVE-UP on stdout, exit 3.
+        run: |
+          out="$(bin/ask-away --title "ci: smoke" --text "unattended runner" \
+            --buttons A B --give-up-after 2 --no-beep)"
+          code=$?
+          test "$out" = "GAVE-UP" -a "$code" = "3"
