@@ -33,10 +33,15 @@ final class PanelRootView: NSView {
     private(set) var bodyDocument: NSHostingView<BodyDocumentView>?
     private(set) var metadataHost: NSHostingView<MetadataContentView>?
     private(set) var buttons: [ChamferButton] = []
+    /// Body link rectangles in document-view coordinates, for the mouse-moved
+    /// cursor check (v0.1.1 amendment, section 8).
+    private var linkRects: [NSRect] = []
+    private var cursorArea: NSTrackingArea?
 
     func configure(
         title: String,
         model: StepModel,
+        countdown: CountdownModel,
         blocks: [BodyBlocks.Block],
         naturalHeight: CGFloat,
         bodyWidth: CGFloat,
@@ -108,7 +113,7 @@ final class PanelRootView: NSView {
             height: Theme.metadataHeight
         )
         let metadata = NSHostingView(
-            rootView: MetadataContentView(title: title, model: model)
+            rootView: MetadataContentView(title: title, model: model, countdown: countdown)
         )
         metadata.frame = metadataFrame
         stack.addSubview(metadata)
@@ -130,6 +135,8 @@ final class PanelRootView: NSView {
         scroll.documentView = document
         stack.addSubview(scroll)
         bodyDocument = document
+
+        updateLinkCursor(blocks: blocks, width: bodyWidth, viewHeight: max(naturalHeight, 1))
 
         swapButtons(buttons, rows: buttonRows)
 
@@ -198,6 +205,80 @@ final class PanelRootView: NSView {
         return super.hitTest(point)
     }
 
+    /// Movable by its background (v0.1.1 amendment, section 10). Borderless
+    /// panels are not draggable by default, and AppKit's
+    /// isMovableByWindowBackground engages only erratically on this shaped,
+    /// clear window (it worked near the window edges and dead-ended over
+    /// content - frame-verified), so the panel drags explicitly: this root
+    /// view sees a mouseDown only when no interactive control consumed it
+    /// (buttons track their own clicks; a plain click still makes key), and
+    /// `performDrag` runs the window-move loop until mouseUp.
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+
+    /// Cursor affordance for markdown links in the body (v0.1.1 amendment,
+    /// section 8): store the link rectangles derived from the TextKit layout;
+    /// the mouse-moved handler checks them per move. Re-run per step swap.
+    func updateLinkCursor(blocks: [BodyBlocks.Block], width: CGFloat, viewHeight: CGFloat) {
+        linkRects = LinkRects.inDocument(
+            blocks: blocks,
+            width: width,
+            viewHeight: viewHeight,
+            hostIsFlipped: bodyDocument?.isFlipped ?? false
+        )
+        if cursorArea == nil {
+            let area = NSTrackingArea(
+                rect: bounds,
+                options: [.mouseMoved, .activeInKeyWindow],
+                owner: self,
+                userInfo: nil
+            )
+            addTrackingArea(area)
+            cursorArea = area
+        }
+    }
+
+    /// The panel never activates, so WindowServer-managed cursor rects and
+    /// cursorUpdate tracking do not engage here. The pointer is set from the
+    /// delivered mouse-moved events instead: pointing hand over buttons and
+    /// body links, arrow elsewhere (v0.1.1 amendment, section 8). The hit
+    /// test reads NSEvent.mouseLocation and view-geometry conversions - the
+    /// posted event locations proved unreliable to map in this window.
+    override func mouseMoved(with event: NSEvent) {
+        updateCursor()
+    }
+
+    private func updateCursor() {
+        guard let window else { return }
+        let global = NSEvent.mouseLocation
+        let overButton = buttons.contains { button in
+            window.convertToScreen(button.convert(button.bounds, to: nil)).contains(global)
+        }
+        var overLink = false
+        if let bodyDocument, !linkRects.isEmpty {
+            // Panel-local arithmetic from design constants and the doc's
+            // visible rect - no NSView.convert: this window's event and view
+            // conversions proved unreliable (measured), while window.frame
+            // and NSEvent.mouseLocation share the AppKit-global space the
+            // cascade placement already uses. Body top offset is fixed by
+            // section 1: 18 top + 14 metadata + 10 gap.
+            let visible = bodyDocument.visibleRect
+            let panelX = window.frame.minX + Theme.windowMargin
+            let panelTopY = window.frame.maxY - Theme.windowMargin
+            let bodyTopOffset = Theme.topPadding + Theme.metadataHeight + Theme.metadataToBody
+            for rect in linkRects {
+                let left = panelX + Theme.horizontalPadding + rect.minX - visible.minX
+                let top = panelTopY - bodyTopOffset - (rect.minY - visible.minY)
+                if NSRect(x: left, y: top - rect.height, width: rect.width, height: rect.height).contains(global) {
+                    overLink = true
+                    break
+                }
+            }
+        }
+        (overLink || overButton ? NSCursor.pointingHand : NSCursor.arrow).set()
+    }
+
     /// Swap in a new step's buttons: remove the old row, place the new one.
     /// Rows are right-aligned; a wrapped second row sits below with the 8pt
     /// gap, both rows right-aligned, reading order preserved, and every
@@ -246,10 +327,12 @@ final class PanelRootView: NSView {
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             )
         else { return nil }
-        // Layer geometry is bottom-left origin; the bitmap expects top-first,
-        // so flip the context before rendering.
-        context.translateBy(x: 0, y: bounds.height * scale)
-        context.scaleBy(x: scale, y: -scale)
+        // No manual flip here: CALayer.render(in:) on this AppKit view-backed
+        // layer tree already yields a bitmap whose first row is the tree's
+        // top, so a top-down CGImage assigned to contents displays right side
+        // up. The old translate+scale(1,-1) recipe double-flipped it and the
+        // outgoing content crossfaded upside down (frame-verified).
+        context.scaleBy(x: scale, y: scale)
         contentLayer.render(in: context)
         guard let image = context.makeImage() else { return nil }
         let layer = CALayer()
@@ -314,6 +397,9 @@ final class PanelController {
     private var bodyRegion: CGFloat = 0
     private var buttonRows: [[[CGFloat]]] = []
     private let model = StepModel()
+    /// Per-tick countdown state, isolated from StepModel: a tick re-renders
+    /// only the seconds text, never the title, indicator, or body.
+    private let countdown = CountdownModel()
 
     /// - Parameters:
     ///   - questions: one question, or a validated §12 sequence in file order.
@@ -518,6 +604,10 @@ final class PanelController {
         // panel becomes key on click, and we take key explicitly via makeKey().
         panel.becomesKeyOnlyIfNeeded = false
         panel.hidesOnDeactivate = false
+        // The panel never activates, so cursor updates ride on mouse-moved
+        // events: without this the window never sees them and hover cursors
+        // (section 8 amendment) never engage.
+        panel.acceptsMouseMovedEvents = true
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
@@ -531,6 +621,7 @@ final class PanelController {
         root.configure(
             title: steps[0].question.title,
             model: model,
+            countdown: countdown,
             blocks: steps[0].blocks,
             naturalHeight: steps[0].naturalHeight,
             bodyWidth: bodyWidth,
@@ -594,7 +685,8 @@ final class PanelController {
             origin: .zero,
             size: CGSize(width: bodyWidth, height: max(step.naturalHeight, 1))
         )
-        root?.metadataHost?.rootView = MetadataContentView(title: step.question.title, model: model)
+        root?.metadataHost?.rootView = MetadataContentView(title: step.question.title, model: model, countdown: countdown)
+        root?.updateLinkCursor(blocks: step.blocks, width: bodyWidth, viewHeight: max(step.naturalHeight, 1))
 
         let buttons = makeButtons(for: step.question)
         root?.swapButtons(buttons, rows: buttonRows[index])
@@ -622,9 +714,17 @@ final class PanelController {
         let riseTransform = CATransform3DMakeTranslation(0, -Theme.stepRise, 0)
 
         // Model values hold the FINAL state; the animations only supply the
-        // presentation fromValues, so nothing snaps back when they end.
+        // presentation fromValues, so nothing snaps back when they end. The
+        // snapshot fades OUT, so its model opacity is 0: when Core Animation
+        // drops the fade at animation end the presentation lands on 0 instead
+        // of snapping to an implicit 1 for a frame (the full-opacity blink of
+        // the outgoing content, frame-verified). Same D23 pattern as the
+        // incoming stack below, on the outgoing side.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        if let snapshot {
+            snapshot.opacity = 0
+        }
         if let stackLayer = root.contentStack?.layer {
             stackLayer.opacity = 1
             stackLayer.transform = CATransform3DIdentity
@@ -641,6 +741,7 @@ final class PanelController {
             fade.toValue = 0
             fade.duration = duration
             fade.timingFunction = Theme.mainCurve
+            fade.fillMode = .forwards
             snapshot.add(fade, forKey: "step.fade")
         }
         if let stackLayer = root.contentStack?.layer {
@@ -740,8 +841,8 @@ final class PanelController {
             updateCountdown(remaining: bound)
         } else {
             deadline = nil
-            model.secondsLeft = nil
-            model.color = Theme.accentSwiftUI
+            countdown.secondsLeft = nil
+            countdown.color = Theme.accentSwiftUI
             if let drainLayer = root?.drainLayer {
                 CATransaction.begin()
                 CATransaction.setDisableActions(true)
@@ -765,10 +866,10 @@ final class PanelController {
     }
 
     private func updateCountdown(remaining: TimeInterval) {
-        model.secondsLeft = Int(remaining.rounded(.up))
+        countdown.secondsLeft = Int(remaining.rounded(.up))
         let fraction = boundSeconds > 0 ? max(0, min(1, remaining / boundSeconds)) : 0
         let color = Theme.rampColor(remainingFraction: fraction)
-        model.color = SwiftUI.Color(nsColor: color)
+        countdown.color = SwiftUI.Color(nsColor: color)
 
         guard let drainLayer = root?.drainLayer else { return }
         // The visual panel width is the window minus the transparent margin

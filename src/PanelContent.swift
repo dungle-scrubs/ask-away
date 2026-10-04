@@ -1,10 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Live state for the metadata row (design.md sections 1 and 12). The drain
-/// line is a CALayer driven by PanelController; this model carries the step
-/// indicator, the seconds text, and their shared ramp color, so line and
-/// number always agree (section 6).
+/// Live state for the metadata row's step identity (design.md sections 1
+/// and 12). Written once per step change - never per tick - so a countdown
+/// tick cannot invalidate the title or the step indicator.
 @MainActor
 final class StepModel: ObservableObject {
     /// "k/n" while a sequence runs; nil in single-question mode and for a
@@ -13,6 +12,14 @@ final class StepModel: ObservableObject {
     /// Count of questions in a sequence, for the AX label.
     @Published var stepIndex: Int = 0
     @Published var stepCount: Int = 0
+}
+
+/// Live countdown state (sections 6 and 12): the seconds text and its shared
+/// ramp color, so line and number always agree. Written per tick by the
+/// drain ticker into its OWN observable: only the countdown text re-renders
+/// per tick - the title, the indicator, and the body never do.
+@MainActor
+final class CountdownModel: ObservableObject {
     /// nil when the current question has no time bound: no countdown renders.
     @Published var secondsLeft: Int?
     @Published var color: Color = Theme.accentSwiftUI
@@ -66,10 +73,13 @@ enum BodyStyle {
 }
 
 /// The metadata row: title left; step indicator and countdown right
-/// (sections 1 and 12). Baseline-aligned, one line, tail-truncated.
+/// (sections 1 and 12). Baseline-aligned, one line, tail-truncated. The
+/// countdown text observes CountdownModel alone, so the per-tick drain
+/// updates never re-render the title or the indicator.
 struct MetadataContentView: View {
     let title: String
     @ObservedObject var model: StepModel
+    @ObservedObject var countdown: CountdownModel
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -84,8 +94,8 @@ struct MetadataContentView: View {
             if model.indicator != nil {
                 indicatorView
                     .layoutPriority(1)
-            } else if let seconds = model.secondsLeft {
-                countdownText(seconds)
+            } else if countdown.secondsLeft != nil {
+                CountdownView(countdown: countdown)
                     .layoutPriority(1)
             }
         }
@@ -99,9 +109,7 @@ struct MetadataContentView: View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
             Text("\(model.stepIndex)/\(model.stepCount)")
             Text(" \u{00B7} ")
-            if let seconds = model.secondsLeft {
-                countdownText(seconds)
-            }
+            CountdownView(countdown: countdown)
         }
         .font(Theme.metadataSwiftUIFont)
         .kerning(Theme.metadataKerning)
@@ -113,18 +121,25 @@ struct MetadataContentView: View {
         .accessibilityValue(accessibilityValue)
     }
 
-    private func countdownText(_ seconds: Int) -> some View {
-        Text("\(seconds)s")
-            .foregroundStyle(model.color)
-            .accessibilityLabel("\(seconds) seconds remaining")
-    }
-
     private var accessibilityValue: String {
         var value = "\(model.stepIndex)/\(model.stepCount)"
-        if let seconds = model.secondsLeft {
+        if let seconds = countdown.secondsLeft {
             value += " \u{00B7} \(seconds)s"
         }
         return value
+    }
+}
+
+/// The seconds text alone ("42s", ramp color per section 2). Isolated so the
+/// per-tick writes re-render only this view; the AX label keeps the section 8
+/// countdown rule (never announced per tick).
+private struct CountdownView: View {
+    @ObservedObject var countdown: CountdownModel
+
+    var body: some View {
+        Text("\(countdown.secondsLeft ?? 0)s")
+            .foregroundStyle(countdown.color)
+            .accessibilityLabel("\(countdown.secondsLeft ?? 0) seconds remaining")
     }
 }
 
@@ -344,5 +359,120 @@ extension BodyBlocks {
     /// Plain text across blocks without owning a BodyBlocks instance.
     static func plainText(of blocks: [Block]) -> String {
         blocks.map(\.plainText).joined(separator: " ")
+    }
+}
+
+/// Cursor affordance for body links (v0.1.1 amendment, section 8).
+/// SwiftUI Text link runs expose no per-link cursor rects and render no
+/// pointer inside NSHostingView (measured: ARROW over a link line), and the
+/// SDK's SwiftUI surface has no cursor API - so link rectangles come from a
+/// parallel TextKit layout of the same attributed string at the same width
+/// and block offsets. The rects only feed the panel's mouse-moved cursor
+/// check (this panel never activates, so WindowServer-managed cursor rects
+/// and cursorUpdate tracking do not engage); clicks and URL opening stay
+/// SwiftUI's. A one-word line-break drift between renderers shifts an
+/// affordance rectangle a few points: cosmetic, never behavioral.
+@MainActor
+enum LinkRects {
+
+    /// Link rectangles in body-document view coordinates (bottom-left
+    /// origin). Block offsets mirror BodyMeasurer.stackHeight exactly; within
+    /// a paragraph, rects come from NSLayoutManager at the render width.
+    static func inDocument(
+        blocks: [BodyBlocks.Block], width: CGFloat, viewHeight: CGFloat, hostIsFlipped: Bool
+    ) -> [NSRect] {
+        let flipped = hostIsFlipped
+        var rects: [NSRect] = []
+        var top: CGFloat = 0
+        for (index, block) in blocks.enumerated() {
+            if index > 0 { top += Theme.blockGap }
+            switch block {
+            case let .paragraph(attr):
+                rects += textKitRects(attr: attr, layoutWidth: width, x: 0, blockTop: top, viewHeight: viewHeight, flipped: flipped)
+                top += BodyMeasurer.textHeight(attr, width: width, kern: Theme.bodyKerning, lineSpacing: BodyStyle.bodyLineSpacing)
+            case let .quote(attr):
+                let quoteWidth = width - Theme.quoteStripeWidth - Theme.quoteIndent
+                rects += textKitRects(
+                    attr: attr,
+                    layoutWidth: quoteWidth,
+                    x: Theme.quoteStripeWidth + Theme.quoteIndent,
+                    blockTop: top,
+                    viewHeight: viewHeight,
+                    flipped: flipped
+                )
+                top += BodyMeasurer.textHeight(attr, width: quoteWidth, kern: Theme.bodyKerning, lineSpacing: BodyStyle.bodyLineSpacing)
+            case let .list(rows):
+                for (rowIndex, row) in rows.enumerated() {
+                    if rowIndex > 0 { top += Theme.listItemSpacing }
+                    let rowWidth = width - Theme.listHang
+                    rects += textKitRects(attr: row.text, layoutWidth: rowWidth, x: Theme.listHang, blockTop: top, viewHeight: viewHeight, flipped: flipped)
+                    top += BodyMeasurer.textHeight(row.text, width: rowWidth, kern: Theme.bodyKerning, lineSpacing: BodyStyle.bodyLineSpacing)
+                }
+            case let .code(chip):
+                // Verbatim code carries no link runs; the pinned chip height
+                // keeps the offset accumulation exact (section 11).
+                top += chip.height
+            }
+        }
+        return rects
+    }
+
+    /// Link rects for one flowing text block: TextKit layout at `layoutWidth`,
+    /// offset `x` into the document, block top `blockTop` from the view's top.
+    private static func textKitRects(
+        attr: AttributedString, layoutWidth: CGFloat, x: CGFloat, blockTop: CGFloat, viewHeight: CGFloat,
+        flipped: Bool
+    ) -> [NSRect] {
+        let storage = NSTextStorage(attributedString: NSAttributedString(attr))
+        let full = NSRange(location: 0, length: storage.length)
+        // The render view applies the body font and kerning as Text-level
+        // modifiers; mirror them as base attributes for runs without their own.
+        storage.addAttributes([
+            .font: Theme.bodyFont,
+            .kern: Theme.bodyKerning,
+        ], range: full)
+        let manager = NSLayoutManager()
+        storage.addLayoutManager(manager)
+        let container = NSTextContainer(containerSize: CGSize(width: layoutWidth, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        manager.addTextContainer(container)
+        // Line height calibrated the same way the render target is: 21pt lines.
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = max(0, Theme.bodyLineHeight - manager.defaultLineHeight(for: Theme.bodyFont))
+        storage.addAttribute(.paragraphStyle, value: paragraph, range: full)
+        manager.ensureLayout(for: container)
+
+        var out: [NSRect] = []
+        storage.enumerateAttribute(.link, in: full) { value, range, _ in
+            guard value != nil else { return }
+            let glyphRange = manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            // Walk the link's lines: one rect per line fragment, sized to the
+            // glyphs the link owns on that line (a wrapped link yields one
+            // rect per line, never the spanning union).
+            var remaining = glyphRange
+            while remaining.length > 0 {
+                var lineGlyphRange = NSRange()
+                _ = manager.lineFragmentRect(forGlyphAt: remaining.location, effectiveRange: &lineGlyphRange)
+                let slice = NSIntersectionRange(lineGlyphRange, remaining)
+                if slice.length > 0 {
+                    let rect = manager.boundingRect(forGlyphRange: slice, in: container)
+                    // Text container rects are top-left origin. NSHostingView
+                    // is a flipped view (top-left origin too), so the rects
+                    // carry over directly; a non-flipped host would need the
+                    // bottom-left conversion instead.
+                    out.append(NSRect(
+                        x: x + rect.minX,
+                        y: flipped ? blockTop + rect.minY : viewHeight - (blockTop + rect.maxY),
+                        width: rect.width,
+                        height: rect.height
+                    ))
+                }
+                remaining = NSRange(
+                    location: NSMaxRange(lineGlyphRange),
+                    length: max(0, NSMaxRange(remaining) - NSMaxRange(lineGlyphRange))
+                )
+            }
+        }
+        return out
     }
 }

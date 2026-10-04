@@ -79,6 +79,14 @@ final class ChamferButton: NSButton {
         trackingArea = area
     }
 
+    // Pointer cursor over the whole button (v0.1.1 amendment, section 8):
+    // deliberately NOT resetCursorRects here. This panel never activates, the
+    // WindowServer-side cursor-rect machinery engages erratically on it, and
+    // its async swaps race the panel's explicit mouse-moved cursor handling
+    // (measured: alternating stale reads). PanelRootView.mouseMoved owns the
+    // cursor for buttons and links alike; hover/press restyling is
+    // independent of it, so the 120ms crossfade cannot drop the pointer.
+
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
     }
