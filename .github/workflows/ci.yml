@@ -43,9 +43,12 @@ jobs:
         # The runner has a WindowServer, so the panel really appears and the
         # bound really expires: GAVE-UP on stdout, exit 3.
         run: |
+          # `|| code=$?` keeps bash -e from aborting on the assignment:
+          # the substitution's exit status (3, the contract) would kill the
+          # step before the assertion runs.
+          code=0
           out="$(bin/ask-away --title "ci: smoke" --text "unattended runner" \
-            --buttons A B --give-up-after 2 --no-beep)"
-          code=$?
+            --buttons A B --give-up-after 2 --no-beep)" || code=$?
           test "$out" = "GAVE-UP" -a "$code" = "3"
 
       - name: Smoke test batch usage errors
@@ -67,7 +70,7 @@ jobs:
         run: |
           swiftc -O -swift-version 6 -target arm64-apple-macos13.0 \
             -o /tmp/askaway-sim $(ls src/*.swift | grep -v main.swift) tests/simdriver.swift
-          out="$(ASKAWAY_SIM=answer,answer,answer /tmp/askaway-sim --questions-file tests/fixtures/answers.json)"
-          code=$?
+          code=0
+          out="$(ASKAWAY_SIM=answer,answer,answer /tmp/askaway-sim --questions-file tests/fixtures/answers.json)" || code=$?
           expected='{"results":[{"index":0,"status":"answered","answer":"Production"},{"index":1,"status":"answered","answer":"Yes"},{"index":2,"status":"answered","answer":"Add note"}],"stopped_at":3}'
           test "$out" = "$expected" -a "$code" = "0"
