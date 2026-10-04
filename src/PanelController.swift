@@ -422,14 +422,30 @@ final class PanelController {
     /// Per-tick countdown state, isolated from StepModel: a tick re-renders
     /// only the seconds text, never the title, indicator, or body.
     private let countdown = CountdownModel()
+    private let attention: AttentionConfig
+    /// Constructor-injected attention dependencies: the simulator's seam.
+    /// nil means live production defaults.
+    private let attentionDependencies: AttentionDependencies?
+    private var attentionController: AttentionController?
 
     /// - Parameters:
     ///   - questions: one question, or a validated §12 sequence in file order.
     ///   - batch: true when the invocation came through --questions-file;
     ///     batch output is the JSON contract even for a single-question file.
-    init(questions: [Question], batch: Bool) {
+    ///   - attention: invocation-level attention configuration; `.disabled`
+    ///     instantiates no detector or discovery tasks at all.
+    ///   - dependencies: injected probe/effects/clock/trace; nil selects the
+    ///     live production set.
+    init(
+        questions: [Question],
+        batch: Bool,
+        attention: AttentionConfig = .standard,
+        dependencies: AttentionDependencies? = nil
+    ) {
         self.steps = questions.map { PreparedStep(question: $0, blocks: BodyBlocks($0.text).blocks) }
         self.isBatch = batch
+        self.attention = attention
+        self.attentionDependencies = dependencies
     }
 
     /// Never returns: exits the process with the outcome's contract code
@@ -465,9 +481,28 @@ final class PanelController {
         model.stepCount = steps.count
         model.indicator = isBatch && steps.count > 1 ? "1/\(steps.count)" : nil
 
-        // One beep per invocation (sections 6 and 12): the moment the panel
-        // appears; in a sequence one objection (any no_beep) silences it.
-        if steps.allSatisfy({ $0.question.beep }) {
+        // One beep per invocation (sections 6, 12, 14). With attention on,
+        // the appear beep waits for the first attention evaluation (within
+        // 1s of appear): single for VISIBLE/UNKNOWN, the escalation triple
+        // for ABSENT. With --no-attention, exactly the v0.2.0 immediate
+        // beep at the moment the panel appears.
+        let beepAllowed = steps.allSatisfy { $0.question.beep }
+        if attention.enabled {
+            guard let panel else { fatalError("attention started without a panel") }
+            let dependencies = attentionDependencies ?? AttentionDependencies(
+                probe: LiveAttentionEngine(),
+                effects: PanelAttentionEffects(panel: panel),
+                clock: .live,
+                trace: nil
+            )
+            let controller = AttentionController(
+                config: attention,
+                beepAllowed: beepAllowed,
+                dependencies: dependencies
+            )
+            controller.start()
+            attentionController = controller
+        } else if beepAllowed {
             NSSound.beep()
         }
 
@@ -1037,6 +1072,8 @@ final class PanelController {
         }
         ticker?.stop()
         ticker = nil
+        attentionController?.stop()
+        attentionController = nil
 
         // Exit: opacity -> 0 and scale -> 1.01, 140ms, same curve; opacity-
         // only 100ms under Reduce Motion (section 7).

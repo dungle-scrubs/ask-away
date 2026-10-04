@@ -355,6 +355,7 @@ protocol AttentionEffectsObserver: AnyObject {
 /// FIRST_EVALUATION_DEADLINE_SECONDS of appear, so unfinished discovery,
 /// in-flight subprocesses, and pending client resolution surface as
 /// no-signal or pending readings, not as waits.
+@MainActor
 protocol AttentionProbeSource: AnyObject {
     /// Kick discovery (ancestry walk, multiplexer context) asynchronously.
     /// Called once after appear; never delays panel presentation.

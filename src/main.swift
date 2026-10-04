@@ -17,11 +17,12 @@ if let first = arguments.first, first == "--help" || first == "-h" {
 }
 
 do {
-    switch try Question.parseInvocation(arguments) {
+    let parsed = try Question.parseInvocation(arguments)
+    switch parsed.content {
     case let .single(question):
-        PanelController(questions: [question], batch: false).run()
+        PanelController(questions: [question], batch: false, attention: parsed.attention).run()
     case let .batch(questions):
-        PanelController(questions: questions, batch: true).run()
+        PanelController(questions: questions, batch: true, attention: parsed.attention).run()
     }
 } catch {
     FileHandle.standardError.write(Data("ask-away: \(error)\n".utf8))
