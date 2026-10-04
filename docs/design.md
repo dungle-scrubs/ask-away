@@ -46,6 +46,7 @@ identity must never depend on what the user had open, so appearance is locked
 |  body text, 1-2 sentences,                       |
 |  wraps, block markup (§11)                       |  10pt above, 18pt below
 |  42s         [ ghost ] [ ghost ] [ FILLED ]      |  row right-aligned
+| [ Type your own answer - Return sends it      ]  |  answer field, full width (§13)
 | ▓▓▓▓▓▓▓▓▓▓▓▓▓▓__________ drain line (2pt)        |
 |                              (bottom-right cut)  |
 +--------------------------------------------------+
@@ -63,9 +64,14 @@ identity must never depend on what the user had open, so appearance is locked
   height caps at **36% of the screen's visible frame height**, beyond which
   the body scrolls internally (no ellipsis).
 - Button row: right-aligned, 8pt gaps between buttons.
+- Answer field (§13): one single-line text input on **every** panel, single
+  question and batch step alike, under the button row. Full inner width,
+  **28pt** tall, the buttons' 7pt chamfers; **8pt** below the button row, and
+  the §1 bottom padding leaves **20pt** between the field and the drain
+  line. §13 owns the full contract.
 - Drain line: 2pt, along the bottom edge, full inner width (see §6).
 
-**Sizing** (amended by §11-§12). Width is fixed per invocation: default
+**Sizing** (amended by §11-§13). Width is fixed per invocation: default
 **420pt**, clamped to [**340pt, 520pt**]. Pick the smallest of
 340 / 420 / 520 at which the body fits in 2 lines (measure the rendered
 block stack at the body style, using **panel width minus 40pt** for both
@@ -75,15 +81,15 @@ height instead, capped at the body maximum, then scrolls internally -
 tail-truncation with ellipsis is retired. 1-2 sentence bodies land at 420pt.
 Body maximum: **36% of the target screen's `visibleFrame.height`**, measured
 at show time. Height is intrinsic: 18 + 14 (metadata) + 10 + body + 18 +
-30 (buttons) + 20, i.e. roughly **148-232pt**; a wrapped second button row
-(§12) adds 38pt. Panel hard cap: **52% of the target screen's
-`visibleFrame.height`**. Fixed chrome is 110pt (one button row) to 148pt
-(wrapped); when 36% + chrome would exceed the cap (visible frames under
-~975pt with a wrapped row), the panel cap is the binding constraint and the
-body region shrinks to the remainder and scrolls - the body region is the
-only elastic element; nothing ever truncates with ellipsis. Example, 900pt
-visible frame: body cap 324pt, panel cap 468pt; a 500pt body renders as a
-324pt scrolling region (panel 434pt).
+30 (buttons) + 8 + 28 (answer field, §13) + 20, i.e. roughly **184-268pt**;
+a wrapped second button row (§12) adds 38pt. Panel hard cap: **52% of the
+target screen's `visibleFrame.height`**. Fixed chrome is **146pt** (one
+button row) to **184pt** (wrapped); when 36% + chrome would exceed the cap
+(visible frames under ~1150pt with a wrapped row), the panel cap is the
+binding constraint and the body region shrinks to the remainder and scrolls
+- the body region is the only elastic element; nothing ever truncates with
+ellipsis. Example, 900pt visible frame: body cap 324pt, panel cap 468pt; a
+500pt body renders as a 322pt scrolling region (panel 468pt).
 
 **Placement.** On the screen containing the pointer
 (`NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }`),
@@ -118,6 +124,17 @@ only adds depth.
 | Default button fill | `accent` | `accent-hover` | `accent-pressed` | `accent 28%` |
 | Default button label | `#062126` | `#062126` | `#062126` | `#669099` |
 | Default button glow | `accent`, r8, 35% | same | same | none |
+| Answer field fill (§13) | `white 2%` | `accent 8%` (focused) | - | - |
+| Answer field hairline (§13) | `white 18%` | `accent 65%` (focused) | - | - |
+| Answer field text | `#F2F7FB` | - | - | - |
+| Answer field placeholder | `#9FB4C1` (§13) | - | - | - |
+| Answer field caret | `accent` | - | - | - |
+| Answer field selection | `accent` @ 35% behind `#F2F7FB` text | - | - | - |
+
+The answer field (§13) has no hover and no pressed state - it is a text
+field, not a button. The Hover column of its rows carries its single
+non-idle state, focus; the idle-to-focused crossfade uses the §7 button
+timing (120ms).
 
 **WCAG contrast**, computed against `#0B0F16` nominal and, in brackets,
 against the worst case (scrim blended over pure white, effective `#23272D`):
@@ -136,6 +153,8 @@ against the worst case (scrim blended over pure white, effective `#23272D`):
 | Secondary `#9FB4C1` on panel (list markers, §11) | **8.9:1** [7.0:1] - AAA |
 | Ramp amber `#FFB020` on panel | **10.5:1** |
 | Ramp red `#FF453A` on panel | **5.6:1** (non-text, needs 3:1) |
+| Answer field placeholder `#9FB4C1` on its `white 2%` fill | **8.6:1** [6.6:1] - AA (hint text; both clear 4.5) |
+| Answer field text on selection `accent` @ 35% | **7.3:1** [5.8:1] - AAA |
 | Disabled labels (2.8:1 / 3.9:1) | exempt - WCAG 1.4.3 excludes inactive controls |
 
 Countdown hue ramp (drain line and the seconds text share one color):
@@ -165,6 +184,7 @@ time is running out.
 | Step indicator (§12) | SF Mono, metadata style | 11pt | 500 | 14pt | +0.3pt, tabular |
 | Button label (ghost) | SF Pro Text | 13pt | 500 | - | +0.1pt |
 | Button label (default) | SF Pro Text | 13pt | 600 | - | +0.1pt |
+| Answer field text + placeholder (§13) | SF Pro Text | 13pt | 400 | 17pt | -0.1pt |
 
 Mono is used only where it means code or measurement (metadata, countdown,
 code, step indicator) - never as decoration. Never uppercase agent-supplied
@@ -180,7 +200,8 @@ constructs degrade to plain text.
   frame motif; all four cuts would eat body measure at the 340pt floor.
 - Buttons: same diagonal orientation, **7pt cuts, top-left and bottom-right**.
   The filled default button keeps the cut - one cut language across the whole
-  panel, no rectangular exceptions.
+  panel, no rectangular exceptions. The answer field (§13) carries the same
+  7pt cuts.
 - Border: **1px** (`lineWidth: 1`, pixel-aligned: offset the path by 0.5pt at
   1x) stroked in `accent` at 100%.
 - Glow: `CALayer.shadowColor = accent`, `shadowRadius = 12`, `shadowOpacity =
@@ -209,8 +230,11 @@ stroke, shadow shape (see §10).
   Return hint. There is no hidden-until-used hint and no NSButton focus ring
   - the dotted ring would fight the neon hairline. Full-keyboard-access users
   get Tab cycling, and a focused (or hovered) ghost button shows the hover
-  treatment (`accent 65%` border). Return triggers the default; Escape sends
-  `CANCELED` (exit 2). No other keys are bound.
+  treatment (`accent 65%` border). Return triggers the default when the
+  answer field (§13) is empty or unfocused; with the field focused and
+  non-empty, Return sends the typed string instead. Escape sends `CANCELED`
+  (exit 2). No other keys are bound; printable characters route to the
+  answer field (§13).
 - Batch mode (§12): up to 4 buttons per question; when the row exceeds the
   inner width it wraps to a second right-aligned row (§12 owns the rule).
 
@@ -272,8 +296,8 @@ glitches.
   both channels stay synchronized while the hue changes smoothly. The
   line's width moves continuously.
 - **Step transition (§12):** the content region (metadata row, body, button
-  row) crossfades over **180ms**, main curve, with the incoming content
-  rising **2pt** into place. Chamfer, border, glow, and drain line persist
+  row, answer field) crossfades over **180ms**, main curve, with the incoming
+  content rising **2pt** into place. Chamfer, border, glow, and drain line persist
   untouched - only content fades; the window never closes or respawns.
 - **Reduce Motion** (`NSWorkspace.accessibilityDisplayShouldReduceMotion`,
   observed live): entrance becomes opacity-only, **100ms**, no scale, no glow
@@ -298,6 +322,10 @@ glitches.
     (markdown syntax stripped, emphasis preserved as traits).
   - Each answer button is an `AXButton` with its label as the title. Close
     is an `AXButton` labeled "Close".
+  - The answer field (§13) is an `AXTextField` labeled **"custom answer"**
+    with the placeholder string as its help; it follows the answer buttons in
+    the AX element order. On commit, one announcement carries the typed
+    string as the answer - posted before the exit fade starts.
   - The panel's `defaultButtonCell` is the default button, so VoiceOver and
     the key plumbing share one source of truth.
   - Countdown: a static text element ("42 seconds remaining"), `AXValue`
@@ -317,7 +345,9 @@ glitches.
   `Text` link runs expose no per-link cursor geometry, so link rectangles
   derive from a parallel TextKit layout of the same attributed string (same
   fonts, kerning, and block offsets); an affordance rectangle a few points
-  off never changes behavior - taps and URL opening stay SwiftUI's.
+  off never changes behavior - taps and URL opening stay SwiftUI's. The
+  answer field (§13) shows the I-beam text cursor, set in the same explicit
+  mouse-moved path.
 - Reduce Motion: §7.
 - The panel never activates the app (§10), so it never disrupts the user's
   VoiceOver cursor or focus in the host app.
@@ -389,6 +419,38 @@ readable:
   1px `white 18%` hairline; hover/pressed per §2 via pointer-enter/exit
   state. The default button's fill and dark label follow §2; its glow rides
   on the button's own layer `shadowPath`.
+- **Answer field first responder (§13).** The field never becomes the
+  panel's initial first responder: set `panel.initialFirstResponder` to the
+  default button before `makeKey()`. Leaving it nil is a trap - AppKit
+  resolves the initial key view down the key-view loop, the field is first
+  in the Tab chain, and Return-on-appear would land in the field instead of
+  the default button. The field takes focus only by click, Tab, or
+  printable-key capture, never at show time.
+- **Printable-key capture (§13).** One mechanism, named: the same local
+  `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` that owns Escape
+  also routes printable characters. KeyDown with no command/option/control
+  flags and a single printable `characters` string, while the field is not
+  first responder: `makeFirstResponder(field)`, then re-dispatch the same
+  event so the field editor inserts it. A field delegate cannot do this -
+  it never sees keys while its field is unfocused - so the delegate is not
+  the capture mechanism. Tab, Return, Escape, and modifiers-carrying
+  keydowns are not captured; they keep their existing routes.
+- **Answer field chrome (§13).** A single-line AppKit `NSTextField` wrapped
+  in `NSViewRepresentable`, masked by its own 7pt chamfer path. `bordered =
+  false`, `drawsBackground = false` - the layer fill paints the §2 states;
+  the focus ring is never drawn (the hairline is the focus state). Caret:
+  the field editor's `insertionPointColor` set to `accent` when editing
+  begins; selection: the editor's `selectedTextAttributes` background
+  `accent` @ 35%. The caret lives inside the masked content tree - the §4
+  chamfer mask already clips it; never build a caret overlay outside the
+  mask.
+- **AppleScript fallback parity (§13).** The skill's `display dialog`
+  fallback passes `default answer ""` and maps: `text returned` non-empty +
+  a button click → stdout the typed string, exit 0; `text returned` empty +
+  a button click → stdout `button returned`, exit 0. Escape cancels
+  (`CANCELED`, exit 2) even with text typed; a bound expiry prints
+  `GAVE-UP` (exit 3) and discards the text. Same stdout contract, no new
+  exit codes.
 - **Block body rendering (§11).** Parse once with `interpretedSyntax: .full`
   and split blocks by grouping consecutive runs with equal
   `PresentationIntent`. Newline scanning cannot find block boundaries:
@@ -411,8 +473,10 @@ readable:
   via snapshot: render the outgoing content into one layer, swap the live
   content to the next question, fade the snapshot 180ms, remove it - no
   second live view tree, no duplicate AX elements. Reassign
-  `panel.defaultButtonCell` and rebuild the Tab chain at each swap; the
-  Escape monitor and the drain layer stay put.
+  `panel.defaultButtonCell` and rebuild the Tab chain at each swap (the
+  chain includes the answer field, §13); the swap clears the field and
+  releases its focus; the Escape/printable-key monitor and the drain layer
+  stay put.
 - **Sequence startup (§12).** Read stdin to EOF for `-`, cap the document at
   256KiB, decode with `Codable` (unknown fields ignored), validate every
   question, and only then build the first panel - a batch must not show
@@ -578,8 +642,10 @@ one line of compact JSON, UTF-8, trailing newline:
 
 - `results[i].index`: 0-based question index.
 - `status`: `answered` | `canceled` | `closed` | `gave-up`. `answer` is
-  present iff `answered`, and carries the button text verbatim (a button labeled
-  `Cancel` answers `"Cancel"`).
+  present iff `answered`, and carries the answer string verbatim - the
+  clicked button's text or the string typed into the answer field (§13);
+  the two are shape-identical in the JSON (a button labeled `Cancel`
+  answers `"Cancel"`, and so does typing `Cancel`).
 - Invariants: entries appear in order for every question that was presented;
   entries before `stopped_at` are all `answered`; `results.count ==
   stopped_at + 1` when stopped early (the stopped entry included);
@@ -597,16 +663,20 @@ one line of compact JSON, UTF-8, trailing newline:
   The frame is computed once from all questions and never changes
   mid-sequence: width by the §1 rule requiring every question's body to fit
   2 lines (else 520pt); height = the maximum per-question height under §1's
-  formula and caps. Content is top-anchored, buttons bottom-anchored; a
-  short question leaves quiet space rather than resizing the window.
+  formula and caps. Content is top-anchored; the button row and the answer
+  field are bottom-anchored, the field always the last row above the bottom
+  padding (§13); a short question leaves quiet space rather than resizing
+  the window.
 - **Step indicator.** Metadata row right side: **`2/3`**, current step
   1-based, plain integers, always `accent`. The indicator contains only
   `k/n`; the countdown remains separate at the lower left above the drain
   origin (§6). A single-question file renders no indicator.
 - **Transition.** Each step change crossfades the content region (metadata
-  row, body, button row) per §7: **180ms**, main curve, incoming content
-  rising **2pt**. No window close/respawn, no resize, no chrome animation.
-  Reduce Motion: opacity-only **100ms**, no slide.
+  row, body, button row, answer field) per §7: **180ms**, main curve,
+  incoming content rising **2pt**. No window close/respawn, no resize, no
+  chrome animation. Reduce Motion: opacity-only **100ms**, no slide. The
+  answer field clears at each step start and enters the step unfocused;
+  typed text never carries across steps.
 - **Drain line and countdown.** The bound is per question: each step's
   deadline restarts from that step's `give_up_after`. At a step start the
   line resets to full width and `accent` **instantly** (a width crossfade
@@ -650,6 +720,91 @@ cursor - the announcement carries the context instead.
 
 ---
 
+## 13. Custom answer field (amends §1 sizing, §2 states, §3, §5, §7, §8, §10, §12)
+
+Every panel carries one free-text answer field: a single-line input under
+the button row, on single questions and on every batch step. Buttons stay
+the primary channel; the field is the always-present second channel for
+answers the button set cannot express. No new flags, no new exit codes.
+
+**Geometry.** Height **28pt**, full inner width (panel width minus 40pt),
+the buttons' **7pt** top-left/bottom-right chamfer cuts (§4). It sits
+**8pt** below the button row; the §1 bottom padding leaves **20pt** between
+the field and the drain line. §1's diagram and height formula include it;
+the §12 fixed frame is computed from the same formula.
+
+**Typography.** Text and placeholder in SF Pro Text 13pt / 400 / 17pt line
+height / -0.1pt tracking (§3) - the body family, never mono: typed prose is
+content, not measurement. Inner horizontal padding **10pt**, vertically
+centered. Placeholder: **"Type your own answer - Return sends it"** in
+`text-secondary`.
+
+**States.** Per §2: idle fill `white 2%`, hairline `white 18%`; focused
+fill `accent 8%`, hairline `accent 65%`; no hover and no pressed state - it
+is a text field. Idle-to-focused crossfade: the §7 button timing,
+**120ms** ease-out. Caret `accent`; selection `accent` @ 35% behind
+`text-body` text. No dotted focus ring - the hairline is the focus state,
+the same stance as the buttons.
+
+**Commit semantics (normative).**
+
+- Return with the field focused and non-empty: the typed string **is** the
+  answer - verbatim, no trim - printed on stdout with a trailing newline,
+  exit **0**; in a batch it is `{"status": "answered", "answer": "<the
+  typed string>"}`. The string is a first-class answer: in single mode it
+  never maps to `CANCELED`, even when it equals a button label (the legacy
+  single-mode `Cancel`-button mapping applies to the button path only).
+- Return with the field empty or unfocused: the default button fires
+  (unchanged §5 behavior).
+- Pointer clicks always answer with the clicked control; only the Return
+  key consults the field. A button click never sends the typed string.
+- Escape anywhere - including focused in the field - is `CANCELED`, exit
+  **2**. Close is `CLOSED`, exit **4**. A bound expiry is `GAVE-UP`, exit
+  **3**. In all three the uncommitted field text is discarded, never
+  printed.
+- The field is single-line: Return never inserts a newline into it, so
+  stdout stays one line.
+
+**Keyboard (normative).**
+
+- Initial focus is never the field: on appear, Return hits the default
+  button (§10 first-responder note).
+- A printable character typed while the field is unfocused moves focus to
+  the field and inserts it - the macOS search-field pattern, driven by the
+  panel's local keyDown monitor (§10).
+- Tab order: the field first, then the buttons in row order (a wrapped §12
+  layout reads row by row), then Close; Shift-Tab walks it backwards. One
+  Tab from a fresh panel reaches typing - the one action with no key of its
+  own. In the VoiceOver element order the field follows the buttons (§8);
+  the two orders disagree on purpose.
+- Escape precedence: the keyDown monitor intercepts Escape before the field
+  editor sees it, whatever the focus.
+- Close while the field is focused works: the X consumes its own click
+  (§5), the field editor deactivates without committing, exit **4**.
+  Starting a background drag (§10) blurs the field the same way, without
+  committing.
+
+**Batch.** The field clears at each step start and enters the step
+unfocused; typed text never carries across steps. A typed answer answers
+only its own step, exactly like a button click. In the §12 step transition
+the field is part of the fading content region.
+
+**VoiceOver.** An `AXTextField` labeled **"custom answer"**; the
+placeholder string is its help. It follows the answer buttons in the AX
+element order; the Tab chain reaches it first (above). On commit the panel
+posts one accessibility announcement carrying the typed string, before the
+exit fade starts, so VoiceOver reads the answer being sent. Pointer cursor
+over the field: the I-beam, set in §8's explicit mouse-moved path.
+
+**AppleScript fallback parity.** The skill's `display dialog` fallback
+renders the field natively via `default answer ""`: `text returned`
+non-empty + a button click → stdout the typed string, exit **0**; empty →
+stdout `button returned`, exit **0**. Escape cancels (`CANCELED`, exit
+**2**) even with text typed; a bound expiry prints `GAVE-UP` (exit **3**)
+and discards the text. Same stdout contract, no new exit codes.
+
+---
+
 Design provenance: spec authored by design-agent under the impeccable
 workflow; decisions and machine-made calls are recorded in `ledger.tsv`
 (git-ignored). Proportion check artifact: `.scratch/ask-away-design/mock2.png`
@@ -659,4 +814,7 @@ rows D12-D18, Foundation `.full` parsing probe in
 `.scratch/ask-away-amend/`. The v0.1.1 amendments (§8 pointer cursor,
 §10 background dragging and per-tick isolation) were authored against
 real-use defect reports; evidence and machine-made calls in
-`.scratch/ask-away-v011/ledger.tsv` (git-ignored).
+`.scratch/ask-away-v011/ledger.tsv` (git-ignored). The custom-answer-field
+amendment (§13) was authored 2026-10-04 by design-agent against a fixed
+caller brief; machine-made calls in ledger rows D25-D27, contrast
+arithmetic in `.scratch/ask-away-fieldamend/contrast.py` (git-ignored).

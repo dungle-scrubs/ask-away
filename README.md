@@ -2,7 +2,7 @@
 
 A native macOS prompt that lets coding agents ask the human a question - and get the clicked answer back on stdout. Comes with a matching agent skill.
 
-One process, one question (or a whole sequence), one outcome. The agent invokes `ask-away` with a title, a body, and buttons; a dark neon-edged panel appears over whatever the human is doing, takes Return and Escape without stealing focus from the host app, and the answer comes back as the clicked button's text, `CANCELED`, `CLOSED`, or `GAVE-UP` - or, in batch mode, one line of JSON walking through every answer.
+One process, one question (or a whole sequence), one outcome. The agent invokes `ask-away` with a title, a body, and buttons; a dark neon-edged panel appears over whatever the human is doing, takes Return and Escape without stealing focus from the host app, and the answer comes back as the clicked button's text, a custom answer the human typed into the answer field, `CANCELED`, `CLOSED`, or `GAVE-UP` - or, in batch mode, one line of JSON walking through every answer.
 
 ![The ask-away panel](docs/panel.png)
 
@@ -68,6 +68,7 @@ Single-question output:
 | stdout | exit | meaning |
 |---|---|---|
 | button text | 0 | the human chose |
+| typed string | 0 | the human typed a custom answer in the field - an answer like a button click |
 | `CANCELED` | 2 | Escape, or a button named "Cancel" was activated |
 | `GAVE-UP` | 3 | the bound expired unanswered |
 | `CLOSED` | 4 | the human dismissed the panel with Close; the decision is unanswered |
@@ -110,7 +111,7 @@ ask-away --questions-file /tmp/deploy-ask.json
 
 - Schema: 1-10 questions; `title` and `text` required; `buttons` is 2-4 strings; optional `default` (1-based, last button by default), `give_up_after` (seconds, absent = unbounded), `no_beep`. Unknown fields ignored; document capped at 256KiB.
 - Validation runs before anything renders: violations exit 1 naming the entry (`ask-away: questions[2].default must be 1..3, got 7`); malformed JSON exits 1 the same way. Nothing prints on stdout in any error case.
-- Output at sequence end: `{"results":[{"index":0,"status":"answered","answer":"Production"},...],"stopped_at":3}` - `status` is `answered`/`canceled`/`closed`/`gave-up`, entries appear for every question presented, and partial answers survive a mid-sequence stop.
+- Output at sequence end: `{"results":[{"index":0,"status":"answered","answer":"Production"},...],"stopped_at":3}` - `status` is `answered`/`canceled`/`closed`/`gave-up`, entries appear for every question presented, and partial answers survive a mid-sequence stop. An `answer` may be a clicked button's text or a string typed into the answer field; the two are shape-identical.
 - Exit codes: 0 all answered | 2 stopped on Escape | 3 stopped on a step's bound | 4 stopped on Close | 1 usage, parse, or validation.
 - Per step: the countdown and bound restart, the drain line resets instantly, and a step without a bound hides them. One beep per sequence, silenced if any question sets `no_beep`.
 - A button labeled `Cancel` answers only its own step; Escape stops the sequence. Up to 4 buttons wrap to a second right-aligned row without shrinking hit targets.
@@ -134,7 +135,7 @@ Parallel invocations cascade; one process per question.
 
 - Appears on the screen holding the pointer, horizontally centered, slightly above center; never repositions automatically. Drag the panel by its background.
 - Cascades +24pt down-right per concurrent panel (wraps after 6) so parallel agents stay readable.
-- Return triggers the default button; Escape cancels; no other keys are bound.
+- Return triggers the default button; Escape cancels; no other keys are bound. One exception: the answer field under the buttons. Typing anywhere lands in it; Return with text in it sends that text (exit 0 - an answer like a button click, even if it matches a button label); Return with it empty or unfocused triggers the default.
 - The top-right X dismisses the panel with `CLOSED` (exit 4). Closing supplies no approval: take no default or best-effort recommendation, and re-ask in the session UI. In a batch, prior answers stay intact and the closed step is appended with `status: "closed"`.
 - The countdown sits at the lower left, above the drain line's origin. The drain line and the seconds text share one color that ramps cyan -> amber -> red as the bound expires.
 - Body markup degrades safely: headings, tables, and thematic breaks render as plain paragraphs; code block content stays verbatim and scrolls internally past a screen-height-proportional cap.

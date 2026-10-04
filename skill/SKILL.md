@@ -50,6 +50,7 @@ question. The recommended answer is the dialog's default button.
 | stdout | exit | meaning | then |
 |---|---|---|---|
 | button text | 0 | the human chose | act on it |
+| the typed string | 0 | the human typed a custom answer | act on it - it is an answer like a button |
 | `CANCELED` | 2 | the human declined the framing | stop, or re-ask in prose |
 | `GAVE-UP` | 3 | the bound expired unanswered | rung 3, below |
 | `CLOSED` | 4 | the human dismissed the native panel | re-ask in the session UI |
@@ -95,7 +96,8 @@ printf '%s' "$doc" | <skill-dir>/scripts/ask.sh --questions-file -
   question was answered. Exit codes: 0 all answered, 2 stopped on
   Escape, 3 stopped on a step's bound, 4 stopped on Close, 1 usage or
   validation. Close at step k appends `{"index":k,"status":"closed"}` and
-  sets `stopped_at` to k.
+  sets `stopped_at` to k. An `answer` is the clicked button's text or a
+  string typed into the panel's answer field; the two are shape-identical.
 - Partial answers survive a mid-sequence stop: answers collected before the
   stopped step are in `results`.
 - The upper-right step indicator reads `k/n`; the lower-left countdown
@@ -148,7 +150,10 @@ When no binary is on PATH (next to the script either), `ask.sh` falls back
 to the same flags through AppleScript `display dialog`, which needs no
 install and no extra permission. The single-question flags are the same,
 but closing the AppleScript fallback returns `CANCELED` (exit 2): that
-renderer cannot distinguish close from cancellation. The fallback cannot
+renderer cannot distinguish close from cancellation. The fallback shows
+the same custom-answer field natively (`default answer ""`): a typed
+string is returned as the answer, an empty field falls back to the clicked
+button's text - same stdout contract. The fallback cannot
 walk a questions file (`--questions-file` there exits 1 with a message), and it
 renders plain text only. The native binary is faster to appear and visually
 distinct from a system dialog.
