@@ -2,7 +2,7 @@
 
 A native macOS prompt that lets coding agents ask the human a question - and get the clicked answer back on stdout. Comes with a matching agent skill.
 
-One process, one question, one answer. The agent invokes `ask-away` with a title, a one-or-two-sentence body, and two or three buttons; a dark neon-edged panel appears over whatever the human is doing, takes Return and Escape without stealing focus from the host app, and the answer comes back as the clicked button's text, `CANCELED`, or `GAVE-UP`.
+One process, one question (or a whole sequence), one outcome. The agent invokes `ask-away` with a title, a body, and buttons; a dark neon-edged panel appears over whatever the human is doing, takes Return and Escape without stealing focus from the host app, and the answer comes back as the clicked button's text, `CANCELED`, or `GAVE-UP` - or, in batch mode, one line of JSON walking through every answer.
 
 ![The ask-away panel](docs/panel.png)
 
@@ -47,16 +47,21 @@ ask-away --title "repo: what this decides" \
          --text "One or two short sentences." \
          --buttons "Cancel" "Option A" "Option A + B" \
          [--default N] [--give-up-after SECONDS] [--no-beep]
+
+ask-away --questions-file questions.json   # or - to read stdin
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--title TITLE` | One line, shown in mono cyan: `repo-name: what this decides`. |
-| `--text TEXT` | One or two sentences. Inline `code`, **strong**, *em* render; real newlines become paragraph breaks. |
+| `--text TEXT` | Body text with block markup: paragraphs, fenced code blocks (info string's first token is the label), one level of lists, blockquotes, hard breaks; inline `code`, **strong**, *em*, links. Longer bodies scroll; nothing is truncated. |
 | `--buttons B1 [B2] [B3]` | Two or three buttons, left to right in the order given. Rightmost is the recommended answer. |
 | `--default N` | 1-based button that takes Return and the filled accent style. Defaults to the LAST button. Position never changes; the fill marks the recommendation. |
 | `--give-up-after S` | Close unanswered after S seconds: the panel drains a countdown line and prints `GAVE-UP`. |
 | `--no-beep` | Suppress the single beep at appearance. |
+| `--questions-file PATH` | Walk 1-10 questions in one panel (batch mode). Mutually exclusive with every flag above. `-` reads the document from stdin to EOF. |
+
+Single-question output:
 
 | stdout | exit | meaning |
 |---|---|---|
@@ -67,14 +72,61 @@ ask-away --title "repo: what this decides" \
 
 `--help` prints the same reference and exits 0.
 
+## Question sequences (batch mode)
+
+A questions file walks the human through several questions in one fixed-frame panel; content crossfades between steps and the step indicator reads `2/3 · 42s`:
+
+```json
+{
+  "questions": [
+    {"title": "deploy: env", "text": "Which environment?", "buttons": ["Staging", "Production"], "default": 2, "give_up_after": 120},
+    {"title": "deploy: confirm", "text": "Confirm **Production**?", "buttons": ["No", "Yes"], "default": 2, "give_up_after": 42},
+    {"title": "deploy: note", "text": "Add a release note?", "buttons": ["Skip", "Add note"]}
+  ]
+}
+```
+
+Copy-paste example an agent can run:
+
+```sh
+cat > /tmp/deploy-ask.json << 'EOF'
+{
+  "questions": [
+    {"title": "deploy: env",     "text": "Which environment should receive build 4211?", "buttons": ["Staging", "Production"], "default": 2, "give_up_after": 120},
+    {"title": "deploy: confirm", "text": "Confirm the **Production** deploy?",   "buttons": ["No", "Yes"],             "default": 2, "give_up_after": 42},
+    {"title": "deploy: note",    "text": "Add a release note?",                  "buttons": ["Skip", "Add note"]}
+  ]
+}
+EOF
+ask-away --questions-file /tmp/deploy-ask.json
+```
+
+- Schema: 1-10 questions; `title` and `text` required; `buttons` is 2-4 strings; optional `default` (1-based, last button by default), `give_up_after` (seconds, absent = unbounded), `no_beep`. Unknown fields ignored; document capped at 256KiB.
+- Validation runs before anything renders: violations exit 1 naming the entry (`ask-away: questions[2].default must be 1..3, got 7`); malformed JSON exits 1 the same way. Nothing prints on stdout in any error case.
+- Output at sequence end: `{"results":[{"index":0,"status":"answered","answer":"Production"},...],"stopped_at":3}` - `status` is `answered`/`canceled`/`gave-up`, entries appear for every question presented, and partial answers survive a mid-sequence stop.
+- Exit codes: 0 all answered | 2 stopped on Escape | 3 stopped on a step's bound | 1 usage, parse, or validation.
+- Per step: the countdown and bound restart, the drain line resets instantly, and a step without a bound hides them. One beep per sequence, silenced if any question sets `no_beep`.
+- A button labeled `Cancel` answers only its own step; Escape stops the sequence. Up to 4 buttons wrap to a second right-aligned row without shrinking hit targets.
+- stdin note: `--questions-file -` reads to EOF before the panel appears - close the pipe or the ask blocks.
+
+Batch output codes:
+
+| stdout | exit | meaning |
+|---|---|---|
+| one line of batch JSON | 0 | every question answered |
+| one line of batch JSON | 2 | sequence stopped on Escape at step k (`stopped_at = k`) |
+| one line of batch JSON | 3 | sequence stopped on a step's bound at step k |
+| error on stderr, nothing on stdout | 1 | usage, unreadable path, malformed JSON, or validation |
+
 ## Behavior
 
 - Appears on the screen holding the pointer, horizontally centered, slightly above center; never repositions.
 - Cascades +24pt down-right per concurrent panel (wraps after 6) so parallel agents stay readable.
 - Return triggers the default button; Escape cancels; no other keys are bound.
 - The countdown drain line and the seconds text share one color that ramps cyan -> amber -> red as the bound expires.
-- VoiceOver: the panel exposes the title, the body reads as plain text, the countdown updates silently, and the default button cell drives Return.
-- Reduce Motion replaces the entrance and exit motion with fades.
+- Body markup degrades safely: headings, tables, and thematic breaks render as plain paragraphs; code block content stays verbatim and scrolls internally past a screen-height-proportional cap.
+- VoiceOver: the panel exposes the title, the body reads as plain text, the countdown updates silently, and the default button cell drives Return. In a batch, each step change posts one "Question k of n" announcement.
+- Reduce Motion replaces the entrance, exit, and step-crossfade motion with fades.
 
 ## Skill installation
 

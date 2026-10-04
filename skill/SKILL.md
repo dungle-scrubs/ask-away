@@ -14,7 +14,8 @@ description:
 # Ask away
 
 Render the decision where the human is, not where the agent is. One panel,
-one clicked button, one bound.
+one clicked button, one bound. For a chain of related decisions, one panel
+can walk them in sequence.
 
 ## When
 
@@ -53,14 +54,63 @@ question. The recommended answer is the dialog's default button.
 | `CANCELED` | 2 | the human declined the framing | stop, or re-ask in prose |
 | `GAVE-UP` | 3 | the bound expired unanswered | rung 3, below |
 
+## Body text scope (markdown)
+
+`--text` renders block markup, not just one paragraph: paragraphs, fenced
+code blocks (info string's first token becomes the label; content verbatim,
+internally scrollable), one nesting level of unordered and ordered lists,
+blockquotes, and hard line breaks. Inline: `code`, **strong**, *em*, and
+accent-underlined links. Headings, tables, and thematic breaks degrade to
+plain paragraphs - do not rely on them for structure. The body scrolls
+after a screen-height-proportional cap; nothing is ever truncated with an
+ellipsis. Keep asks short anyway: the dialog is a decision surface, and the
+chat reply carries the details.
+
+## Batch mode (--questions-file)
+
+One invocation can walk up to 10 questions in one panel:
+
+```sh
+<skill-dir>/scripts/ask.sh --questions-file questions.json
+printf '%s' "$doc" | <skill-dir>/scripts/ask.sh --questions-file -
+```
+
+- The document is JSON: `{"questions": [...]}`, 1-10 entries, each with
+  required `title` and `text`, `buttons` (2-4 strings), optional `default`
+  (1-based, defaults to the last button), `give_up_after` (seconds, absent =
+  unbounded), `no_beep` (bool). Unknown fields are ignored; the document is
+  capped at 256KiB.
+- `--questions-file` is mutually exclusive with every single-question flag;
+  any co-presence exits 1 without showing a panel.
+- Validation failures exit 1 before any panel appears and name the entry:
+  `ask-away: questions[2].default must be 1..3, got 7`.
+- stdout at sequence end is one line of JSON:
+  `{"results":[{"index":0,"status":"answered","answer":"Deploy"},{"index":1,"status":"canceled"}],"stopped_at":1}`.
+  `status` is `answered` (with `answer`) | `canceled` | `gave-up`;
+  `stopped_at` is the 0-based stop step, or the question count when every
+  question was answered. Exit codes: 0 all answered, 2 stopped on
+  Escape/cancel, 3 stopped on a step's bound, 1 usage or validation.
+- Partial answers survive a mid-sequence stop: answers collected before the
+  stopped step are in `results`.
+- The step indicator reads `k/n · 42s`; the countdown and bound restart per
+  question; the beep plays once per sequence and any question's `no_beep`
+  silences it.
+- A button labeled `Cancel` answers only its own step and the sequence
+  continues. Escape stops the whole sequence.
+
+**stdin pitfall:** with `--questions-file -` the document is read to EOF
+before the panel appears - a caller that never closes stdin blocks the ask
+forever. Build the document, close the pipe, then wait.
+
 ## Output
 
 **Artifact:** none; this skill writes no file. **Where:** `ask.sh` prints
 the clicked button's text, `CANCELED`, or `GAVE-UP` on stdout (exit 0, 2, or
-3), and the agent reports that answer in chat. **Contains:** the human's
-choice only; details and tables stay in the agent's chat reply, never in the
-dialog. **Not:** an authorization the caller did not already hold; an
-unanswered ask stays unanswered (the gave-up handoff below states the rule).
+3) - or the batch JSON above - and the agent reports that answer in chat.
+**Contains:** the human's choice only; details and tables stay in the
+agent's chat reply, never in the dialog. **Not:** an authorization the
+caller did not already hold; an unanswered ask stays unanswered (the
+gave-up handoff below states the rule).
 
 ## The gave-up handoff (rung 3)
 
@@ -73,21 +123,26 @@ surface never takes the best-effort path - re-ask with a longer bound, or
 wait in prose.
 
 Size the bound from how long the work can wait: minutes for an
-authorization, tens of seconds for a mid-task preference.
+authorization, tens of seconds for a mid-task preference. In a batch, size
+each step's `give_up_after` the same way; the sequence stops at the first
+step whose bound expires.
 
 ## The renderer
 
 `ask.sh` drives the native `ask-away` binary when one is installed: a
 non-activating dark panel with a neon edge that appears over the current
 app, takes Return and Escape without stealing focus from the host app, and
-cascades for parallel invocations. Inline `code`, **strong**, and *em*
-spans render in the body; newlines become paragraph breaks.
+cascades for parallel invocations. The body renders the block markup
+described above; a batch is one fixed-frame panel whose content crossfades
+between steps and holds one cascade slot.
 
 When no binary is on PATH (next to the script either), `ask.sh` falls back
 to the same flags through AppleScript `display dialog`, which needs no
-install and no extra permission. The stdout, exit codes, and flag surface
-are identical in both paths; the native binary is faster to appear and
-visually distinct from a system dialog.
+install and no extra permission. The stdout, exit codes, and single-question
+flag surface are identical in both paths; the fallback cannot walk a
+questions file (`--questions-file` there exits 1 with a message), and it
+renders plain text only. The native binary is faster to appear and visually
+distinct from a system dialog.
 
 ## Not this
 
@@ -107,17 +162,26 @@ visually distinct from a system dialog.
 On the reference machine (Apple Silicon MacBook Pro, macOS 26), for the
 native binary: process launch to window visible measured 135-214 ms warm
 and 385 ms cold (first launch after build; 2-3 ms poll granularity). A 2 s
-bound printed `GAVE-UP` on stdout with exit 3 at 2.25-2.29 s wall time
+bound printed `GAVE-UP` on stdout with exit 3 at 2.25-2.37 s wall time
 (deadline + one display-link tick + the 140 ms exit fade + process
 teardown). Live-window captures, pixel-sampled against the design tokens:
-1 px cyan border at full alpha, 90% `#0B0F16` scrim, `white 2%` ghost
-fills, solid accent default fill with dark label, and a 2 pt drain line
-whose color matched the countdown text through the cyan-amber-red ramp.
-Bodies with quotes, backslashes, and real newlines rendered correctly,
-including `code`, **strong**, and *em* spans. Real synthetic input
-(CGEventPost, the Accessibility permission belonging to the calling
-terminal, none to the dialog) clicked both button kinds and delivered
-Return and Escape: all five scenarios matched the contract table above.
-The AppleScript fallback was measured earlier as the `ask-on-screen`
-renderer: no extra permission, correct quoting, one reflex-speed human
-click, Escape to `CANCELED` exit 2, and a 5 s bound giving up at 5.1 s.
+1 px cyan border at full alpha, `white 6%` code-chip fill over the scrim
+(exact measured RGB vs the derived blend), accent info-string label, 2 pt
+accent blockquote stripe bounded to the quoted line's 21 pt, list markers
+in the 14 pt marker column with text hanging at 16 pt, and a 2 pt drain
+line whose color matched the countdown text through the cyan-amber-red
+ramp. A 24-paragraph body capped the body region at exactly 36% of the
+screen's visible frame (518.4 pt of 1440) inside a panel well under the 52%
+panel cap, and scrolled live (4.6% of pixels changed under a synthetic
+scroll, all inside the body region); a 40-line code block's chip capped at
+exactly 25% of the visible frame (360.0 pt) and scrolled internally with
+the surrounding content static. Real synthetic input (CGEventPost, the
+Accessibility permission belonging to the calling terminal, none to the
+dialog) drove a full 3-question sequence (exit 0, all answered), Escape at
+step 2 (results[0] answered, stopped_at=1, exit 2), a step-2 bound expiry
+(exit 3), and clicks on both rows of a wrapped 4-button layout including
+the second-row button; the same scenarios pass through the in-app posted-
+event driver with exact batch-JSON equality. The AppleScript fallback was
+measured earlier as the `ask-on-screen` renderer: no extra permission,
+correct quoting, one reflex-speed human click, Escape to `CANCELED` exit 2,
+and a 5 s bound giving up at 5.1 s.

@@ -4,18 +4,28 @@
 # Usage:
 #   ask.sh --title TITLE --text TEXT --buttons B1 [B2] [B3]
 #          [--default N] [--give-up-after SECONDS] [--no-beep]
+#   ask.sh --questions-file PATH        (PATH may be "-" for stdin)
 #
-# Output (stdout): the clicked button's text, or CANCELED, or GAVE-UP.
-# Exit codes: 0 clicked | 2 canceled | 3 gave up | 1 usage or osascript error.
+# Output (stdout): the clicked button's text, or CANCELED, or GAVE-UP; in
+# batch mode one line of JSON {"results":[...],"stopped_at":N}.
+# Exit codes: 0 answered | 2 canceled | 3 gave up | 1 usage or osascript
+# error.
 #
 # --default N is 1-based and defaults to the LAST button, so the recommended
 # answer is the rightmost unless the caller says otherwise. A button named
-# "Cancel" is macOS's cancel button and maps to CANCELED.
+# "Cancel" is macOS's cancel button and maps to CANCELED in single-question
+# mode; in a questions file it only answers its own step.
 #
 # Renderer: if an ask-away binary is on PATH, or sits at ../bin/ask-away
 # relative to this script, it drives the native panel. Otherwise this script
 # falls back to AppleScript display dialog - same flags, same stdout and
-# exit contract, no install needed.
+# exit contract, no install needed. The AppleScript fallback cannot walk a
+# questions file: --questions-file there is a usage error.
+#
+# stdin: the native path exec's the binary, so stdin passes through
+# untouched - "--questions-file -" reads the document from stdin to EOF.
+# Nothing else reads stdin; callers piping documents need not close early,
+# but a batch under "-" will not show its panel until stdin reaches EOF.
 
 set -euo pipefail
 
@@ -28,6 +38,9 @@ elif [[ -x "${BASH_SOURCE[0]%/*}/../bin/ask-away" ]]; then
 fi
 
 if [[ -n "$native" ]]; then
+  # exec keeps stdin/stdout/stderr exactly as the caller set them: a
+  # "--questions-file -" document arrives untouched, and the JSON answer
+  # line is the only thing we print.
   exec "$native" "$@"
 fi
 
@@ -44,6 +57,9 @@ while [[ $# -gt 0 ]]; do
     --default) default="$2"; shift 2 ;;
     --give-up-after) give_up="$2"; shift 2 ;;
     --no-beep) beep="no"; shift ;;
+    --questions-file)
+      echo "ask.sh: --questions-file (batch mode) needs the native ask-away renderer; install the binary or pass single-question flags" >&2
+      exit 1 ;;
     *) echo "ask.sh: unknown argument: $1" >&2; exit 1 ;;
   esac
 done
