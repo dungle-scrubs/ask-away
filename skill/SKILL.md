@@ -149,10 +149,9 @@ distinct from a system dialog.
 <!-- skill-graph: mentions - each is named to route the reader away from
      this skill; none is loaded here -->
 
-- [peekaboo](../peekaboo/SKILL.md) drives windows that already
-  exist and cannot create one. This skill creates the dialog; peekaboo is
-  not involved.
-- [open-in-browser](../open-in-browser/SKILL.md) is for URLs.
+- `peekaboo` drives windows that already exist and cannot create one. This
+  skill creates the dialog; peekaboo is not involved.
+- `open-in-browser` is for URLs.
 - A terminal question tool blocks inside the harness UI. Reach for it when
   the human is watching the terminal; reach for this skill when they may not
   be.
