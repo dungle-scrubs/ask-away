@@ -281,6 +281,15 @@ glitches.
     <plain body>" (markdown stripped), posted when the new content lands.
     Countdown silence applies to every step.
 - VoiceOver focus should land on the body text (the question) first.
+- Pointer cursor: interactive elements show the pointing hand - chamfered
+  buttons and body markdown links - and the arrow restores everywhere else.
+  This panel never activates (§10), so the declarative AppKit cursor
+  mechanisms (cursor rects, `cursorUpdate` tracking) do not engage reliably;
+  the cursor is set explicitly from delivered mouse-moved events. SwiftUI
+  `Text` link runs expose no per-link cursor geometry, so link rectangles
+  derive from a parallel TextKit layout of the same attributed string (same
+  fonts, kerning, and block offsets); an affordance rectangle a few points
+  off never changes behavior - taps and URL opening stay SwiftUI's.
 - Reduce Motion: §7.
 - The panel never activates the app (§10), so it never disrupts the user's
   VoiceOver cursor or focus in the host app.
@@ -384,6 +393,22 @@ readable:
   Timers/display link invalidated on close; the cascade registry entry
   removed on every exit path (answer, cancel, give-up, crash-safe via pid
   staleness).
+- **Movable by its background (amended v0.1.1).** The panel drags by any
+  non-interactive surface: body text, metadata row, quiet bands, and
+  padding - everything except buttons and links, which consume their own
+  clicks. The transparent margin around the visual panel (the elevation
+  room described in §4) is not draggable - clicks there fall through as
+  before. AppKit's `isMovableByWindowBackground` engages only erratically
+  on this shaped, clear borderless window (measured: near-edge points
+  dragged, mid-panel points dead-ended at identical hit chains), so the
+  drag is explicit: the root view forwards unconsumed mouse downs to
+  `NSWindow.performDrag(with:)`, which runs the window-move loop until
+  mouseUp. A plain click still makes key.
+- **Per-tick isolation (amended v0.1.1).** The countdown seconds text and
+  its ramp color live in their own observable: a drain tick re-renders only
+  the seconds text - never the title, the step indicator, or the body - so
+  §12's step transition fires exactly once per step change regardless of a
+  running bound.
 - **Assumption:** macOS 13+ floor (SwiftUI-in-NSPanel, `AttributedString`
   markdown parsing). Confirm the minimum OS before implementation; nothing
   in this spec needs newer APIs except the display link (fall back to
@@ -603,4 +628,7 @@ workflow; decisions and machine-made calls are recorded in `ledger.tsv`
 (git-ignored, throwaway). Block-markup and question-sequence amendments
 (§11-§12) authored 2026-10-04 by design-agent; machine-made calls in ledger
 rows D12-D18, Foundation `.full` parsing probe in
-`.scratch/ask-away-amend/`.
+`.scratch/ask-away-amend/`. The v0.1.1 amendments (§8 pointer cursor,
+§10 background dragging and per-tick isolation) were authored against
+real-use defect reports; evidence and machine-made calls in
+`.scratch/ask-away-v011/ledger.tsv` (git-ignored).
