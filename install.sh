@@ -44,13 +44,15 @@ else
   echo "downloading $url"
   curl -fsSL "$url" -o "$tmp/ask-away.tar.gz"
   tar -xzf "$tmp/ask-away.tar.gz" -C "$tmp"
-  # curl does not set the quarantine attribute, so the ad-hoc signature is
-  # enough; verify the binary actually runs before installing it.
-  "$tmp/ask-away" --help >/dev/null
+  # The tarball unpacks to an ask-away/ directory: binary at its root, skill/
+  # beside it. curl does not set the quarantine attribute, so the ad-hoc
+  # signature is enough; verify the binary actually runs before installing.
+  bin="$tmp/ask-away/ask-away"
+  "$bin" --help >/dev/null
 fi
 
 mkdir -p "$PREFIX"
-install -m 755 "$tmp/ask-away" "$PREFIX/ask-away"
+install -m 755 "${bin:-$tmp/ask-away}" "$PREFIX/ask-away"
 echo "installed $PREFIX/ask-away"
 "$PREFIX/ask-away" --help >/dev/null && echo "verified: $PREFIX/ask-away --help exits 0"
 
