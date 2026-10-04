@@ -4,10 +4,13 @@
 # Usage:
 #   ask.sh --title TITLE --text TEXT --buttons B1 [B2] [B3]
 #          [--default N] [--give-up-after SECONDS] [--no-beep]
+#          [--interrupt-after SECONDS] [--absent-after SECONDS]
+#          [--no-attention]
 #   ask.sh --questions-file PATH        (PATH may be "-" for stdin)
 #
-# Output (stdout): the clicked button's text, or CANCELED, or GAVE-UP; in
-# batch mode one line of JSON {"results":[...],"stopped_at":N}.
+# Output (stdout): the clicked button's text or the typed answer string, or
+# CANCELED, GAVE-UP, or CLOSED; in batch mode one line of JSON
+# {"results":[...],"stopped_at":N}.
 # Exit codes: 0 answered | 2 canceled | 3 gave up | 1 usage or osascript
 # error.
 #
@@ -15,6 +18,18 @@
 # answer is the rightmost unless the caller says otherwise. A button named
 # "Cancel" is macOS's cancel button and maps to CANCELED in single-question
 # mode; in a questions file it only answers its own step.
+#
+# Custom answers: the dialog carries a text field (design spec section 13
+# fallback parity). A non-empty typed string plus a button click answers
+# with the typed string, exit 0; an empty field answers with the button
+# label. Escape cancels (CANCELED, exit 2) even with text typed; a bound
+# expiry prints GAVE-UP (exit 3) and discards the text. The fallback cannot
+# distinguish close from cancel and keeps CANCELED, exit 2.
+#
+# Attention flags (--interrupt-after, --absent-after, --no-attention) are
+# accepted and validated here, and are behaviorally inert in the fallback:
+# display dialog has no attention model. Same documented-renderer-limitation
+# pattern as --questions-file.
 #
 # Renderer: if an ask-away binary is on PATH, or sits at ../bin/ask-away
 # relative to this script, it drives the native panel. Otherwise this script
@@ -40,14 +55,24 @@ fi
 if [[ -n "$native" ]]; then
   # exec keeps stdin/stdout/stderr exactly as the caller set them: a
   # "--questions-file -" document arrives untouched, and the JSON answer
-  # line is the only thing we print.
+  # line is the only thing we print. Attention flags pass straight through.
   exec "$native" "$@"
 fi
 
 # --- AppleScript fallback (identical flag surface and output contract) ----
 
 title="" text="" default="" give_up="" beep="yes"
+interrupt_after="" absent_after="" no_attention="no"
 buttons=()
+
+usage_error() {
+  echo "ask.sh: $1" >&2
+  exit 1
+}
+
+whole_seconds() { # whole_seconds FLAG VALUE
+  [[ "$2" =~ ^[0-9]+$ ]] || usage_error "$1 must be a whole number of seconds >= 0, got $2"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -57,6 +82,18 @@ while [[ $# -gt 0 ]]; do
     --default) default="$2"; shift 2 ;;
     --give-up-after) give_up="$2"; shift 2 ;;
     --no-beep) beep="no"; shift ;;
+    --interrupt-after)
+      [[ "$no_attention" == yes ]] && usage_error "--no-attention cannot be combined with --interrupt-after"
+      whole_seconds --interrupt-after "$2"
+      interrupt_after="$2"; shift 2 ;;
+    --absent-after)
+      [[ "$no_attention" == yes ]] && usage_error "--no-attention cannot be combined with --absent-after"
+      whole_seconds --absent-after "$2"
+      absent_after="$2"; shift 2 ;;
+    --no-attention)
+      [[ -n "$interrupt_after" ]] && usage_error "--no-attention cannot be combined with --interrupt-after"
+      [[ -n "$absent_after" ]] && usage_error "--no-attention cannot be combined with --absent-after"
+      no_attention="yes"; shift ;;
     --questions-file)
       echo "ask.sh: --questions-file (batch mode) needs the native ask-away renderer; install the binary or pass single-question flags" >&2
       exit 1 ;;
@@ -91,24 +128,32 @@ for b in "${buttons[@]}"; do
 done
 button_list="${button_list%,}"
 
-script="${beep_line}display dialog \"$(esc "$text")\" with title \"$(esc "$title")\" buttons {$button_list} $default_clause$give_up_clause with icon note"
+script="${beep_line}display dialog \"$(esc "$text")\" with title \"$(esc "$title")\" default answer \"\" buttons {$button_list} $default_clause$give_up_clause with icon note"
 
 err_file="$(mktemp)"
 trap 'rm -f "$err_file"' EXIT
 
-out="$(osascript -e "$script" -e 'button returned of result as text' 2>"$err_file" || true)"
+out="$(osascript -e "$script" -e 'return (button returned of result as text) & (ASCII character 1) & (text returned of result as text)' 2>"$err_file" || true)"
 err="$(cat "$err_file")"
 
-# A clicked button makes out non-empty. A gave-up dialog exits 0 with an
-# empty button and no error. A cancel exits 1 with -128 in the error.
-if [[ -n "$out" ]]; then
-  printf '%s\n' "$out"; exit 0
+# Split the combined result; the typed text may itself be empty or full.
+button_part="${out%%$'\x01'*}"
+text_part="${out#*$'\x01'}"
+
+# Gave up BEFORE extracting text: an expired dialog exits 0 with an empty
+# button and no error, whatever the text field held. Never infer the outcome
+# from empty returned text alone.
+if [[ -z "$err" && -z "$button_part" ]]; then
+  echo "GAVE-UP"; exit 3
 fi
 if [[ "$err" == *"User canceled"* || "$err" == *"-128"* ]]; then
   echo "CANCELED"; exit 2
 fi
-if [[ -z "$err" ]]; then
-  echo "GAVE-UP"; exit 3
+if [[ -n "$err" ]]; then
+  echo "ask.sh: osascript error: $err" >&2
+  exit 1
 fi
-echo "ask.sh: osascript error: $err" >&2
-exit 1
+if [[ -n "$text_part" ]]; then
+  printf '%s\n' "$text_part"; exit 0
+fi
+printf '%s\n' "$button_part"; exit 0
