@@ -272,11 +272,14 @@ stroke, shadow shape (see §10).
   to full width instantly at each step start (no crossfade on the reset);
   steps without a bound hide the line and countdown exactly like a no-bound
   single invocation.
-- **Beep:** audio only, unrelated to the drain line. One `NSSound.beep()` at
-  the moment the panel appears; `--no-beep` suppresses it. The line, ramp,
-  and timing are identical either way. In a sequence (§12) the beep plays
-  once at sequence start, never per step; it is suppressed when any question
-  in the file sets `no_beep`.
+- **Beep (amended §14):** audio only, unrelated to the drain line. With
+  attention on (§14), the beep plays at the first attention evaluation -
+  within **1s** of appear - as a single beep (PRESENT or UNKNOWN) or the
+  escalation triple (ABSENT); `--no-beep` suppresses every pattern. With
+  `--no-attention`, one `NSSound.beep()` at the moment the panel appears,
+  exactly as v0.2.0. The line, ramp, and timing are identical either way. In
+  a sequence (§12) the beep plays once at sequence start, never per step; it
+  is suppressed when any question in the file sets `no_beep`.
 
 ## 7. Motion
 
@@ -501,6 +504,39 @@ readable:
   the seconds text - never the title, the step indicator, or the body - so
   §12's step transition fires exactly once per step change regardless of a
   running bound.
+- **Attention probes (§14).** Identification reads the own-process
+  environment (the panel inherits the asking agent's env), so an
+  SSH-launched panel usually carries no `TERM_PROGRAM` and its ancestor walk
+  dead-ends at `sshd`: attention runs in the UNKNOWN rows and the panel
+  behaves exactly as v0.2.0. A CI session has no GUI at all - same UNKNOWN
+  result, and **no crash**: every probe is failure-wrapped. A nil
+  `frontmostApplication` reads as not frontmost; a failed idle read skips
+  the tick; a failed display read reads awake; a failed or timed-out probe
+  yields no signal. Probes never block the main thread on I/O: the tmux
+  probe spawns a subprocess off-main with a **2s** kill budget; the rest are
+  in-process calls.
+- **Attention permissions.** `CGEventSource.secondsSinceLastEventType` reads
+  system idle time; it is not an event tap and needs no Accessibility or
+  Input Monitoring permission. `NSWorkspace.frontmostApplication` likewise.
+  (The posted-event test driver's Accessibility grant belongs to the calling
+  terminal, unchanged.)
+- **Attention activation.** Escalation is the only activation: the process
+  keeps `.accessory` + `.nonactivatingPanel` (§10) for its whole life, and
+  `NSApp.activate(ignoringOtherApps: true)` runs only in the §14 escalation
+  sequence, before `makeKeyAndOrderFront`. It makes ask-away the active
+  application (the host app deactivates); when the panel closes, the process
+  exits and the system restores focus on its own - no restore dance, no
+  re-activation of ask-away. On the macOS 13 floor
+  `activate(ignoringOtherApps:)` is the floor-legal spelling; the macOS 14+
+  deprecation warning is expected and must not be "upgraded" past the floor.
+- **Attention cadence.** One **1 Hz** `Timer` on the main RunLoop drives
+  detection. It shares nothing with the drain display link (§6) and does no
+  display-link work; a tick's cost is a few in-process calls plus at most
+  one spawned probe. State changes apply on the main thread only.
+- **Attention first evaluation.** Detection never delays the panel: layout,
+  placement, and key status are unchanged at show time. The first state
+  evaluation is scheduled async at show time and must complete within **1s**;
+  the appear beep waits for it (§6, §14).
 - **Assumption:** macOS 13+ floor (SwiftUI-in-NSPanel, `AttributedString`
   markdown parsing). Confirm the minimum OS before implementation; nothing
   in this spec needs newer APIs except the display link (fall back to
@@ -707,6 +743,12 @@ one line of compact JSON, UTF-8, trailing newline:
   is `CANCELED`, exit 2. The asymmetry is deliberate.
 - **Give-up at step k**: entry `k` is `gave-up`, `stopped_at = k`, exit
   **3**; earlier answers are in `results`.
+- **Attention (§14) is invocation-level.** The document schema gains no
+  attention fields in v1 - attention is a setting about the human, not about
+  a question. State is computed once at panel launch and re-evaluated on the
+  running timer across steps; escalation targets the panel, never a step;
+  answered, `canceled`, `closed`, and `gave-up` all end the detector. The
+  appear beep evaluates once at sequence start under the §14 policy.
 
 **Accessibility.** At each step change the panel posts one accessibility
 announcement: **"Question k of n: <title>. <plain body>"** (markdown
@@ -805,6 +847,202 @@ and discards the text. Same stdout contract, no new exit codes.
 
 ---
 
+## 14. Attention-aware escalation (amends §6 beep, §10 notes, §12 batch)
+
+The panel escalates only when the evidence says the human is not looking.
+One unforgivable failure: stealing focus on a wrong guess. UNKNOWN therefore
+never escalates, escalation requires the ABSENT state - a truth-table row at
+a tick, never a judgment call - and every threshold is a named constant.
+Attention changes WHEN the human is pulled to the panel, never WHAT is
+answered: no new exit codes, no new stdout, outcomes byte-identical.
+
+**Identification.** Name the GUI terminal this session runs in, so
+"frontmost" has a target. Read the own-process environment (the panel
+inherits the asking agent's env): `TERM_PROGRAM` names the terminal,
+`TMUX` / `ZELLIJ` / `STY` / `HERDR_ENV` mark a multiplexer. When the env
+yields no terminal, walk the ancestor process chain (sysctl
+`KERN_PROC_PID` ppid walk from `getpid()`): resolve each pid's bundle id via
+`NSRunningApplication(processIdentifier:)`; the first pid whose bundle id is
+in the known-terminal table wins - the innermost terminal hosts the pane.
+Non-GUI ancestors resolve nil and the walk continues. **Env wins:** when
+both sources answer, the env claim is used and the walk is not run; the
+walk only fills gaps. Unknown terminals are legal: no claim and no known
+ancestor leaves the panel unidentified - it renders and answers normally,
+and attention falls back to the UNKNOWN rows.
+
+| `TERM_PROGRAM` | Bundle id (named table `TERMINALS`) |
+| --- | --- |
+| `Apple_Terminal` | `com.apple.Terminal` |
+| `iTerm.app` | `com.googlecode.iterm2` |
+| `ghostty` | `com.mitchellh.ghostty` |
+| `WezTerm` | `com.github.wez.wezterm` |
+| `vscode` | `com.microsoft.VSCode` |
+
+**Multiplexer attach.**
+
+- **tmux** (`TMUX` set): run `tmux display -p '#{client_attached}'` with the
+  inherited env, no `-t`. Parse qualified by exit status: exit 0 + stdout
+  `1` = attached; exit 0 + **empty stdout = detached**; any other output,
+  non-zero exit, or spawn failure = no signal. The empty-means-detached rule
+  is measured (tmux 3.7 prints an empty value for a detached pane, never
+  `0`) - a naive `!= 1` parse would misread probe failure as absence.
+- **Herdr** (`HERDR_ENV` set): no attach probe in v1 - the CLI exposes pane
+  focus but no client-attach state. Herdr behaves like a non-multiplexer:
+  the env only marks identification.
+- **zellij / screen** (`ZELLIJ` / `STY`): detection only, no attach probe in
+  v1 - identified-but-unknown attach; rules fall through to focus + idle.
+
+**Signals.** All local, all permissionless:
+
+| # | Signal | Mechanism | On failure |
+| --- | --- | --- | --- |
+| 1 | Terminal identification | env table + `KERN_PROC_PID` walk above | unidentified |
+| 2 | Multiplexer attach | tmux probe above (only when `TMUX` set) | no signal |
+| 3 | Focus | `NSWorkspace.shared.frontmostApplication?.bundleIdentifier ==` identified bundle id | not frontmost |
+| 4 | Presence | `CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)` - system-wide input idle seconds | skip the tick |
+| 5 | Hard absence | `CGDisplayIsAsleep(CGMainDisplayID()) != 0`, or `NSWorkspace.shared.runningApplications` contains bundle id `com.apple.screensaver` | reads awake |
+
+Signal 4 measures physical input across the whole login session. A busy
+agent injects no HID events, so agent work cannot fake presence (measured:
+9.2s idle reported mid-agent-work). Signal 5 needs no other input: display
+asleep or screensaver running is absence, full stop.
+
+**States (truth table, precedence-ordered).** Evaluate top to bottom each
+tick; the first matching row is the state.
+
+| Row | Asleep / screensaver | Attach probe | Frontmost = identified | Input idle | State |
+| --- | --- | --- | --- | --- | --- |
+| 1 | true | any | any | any | **ABSENT** |
+| 2 | false | detached | any | any | **ABSENT** |
+| 3 | false | attached / unknown | yes | any | **PRESENT** |
+| 4 | false | any | any | < 3s | **PRESENT** |
+| 5 | false | attached / unknown | no | >= absent-after | **ABSENT** |
+| 6 | every remaining combination | | | | **UNKNOWN** |
+
+- Row 2 outranks row 3 by decision: a detached tmux client means the asking
+  agent's own surface is not being watched, even if the physical terminal is
+  frontmost; the human re-attaches to answer.
+- Row 4 is the reflex catch: input anywhere in the last 3 seconds means
+  hands on the machine, whatever is frontmost.
+- Row 6 collects every ambiguous remainder: unidentified terminal (SSH
+  launch, CI, unknown app), not-frontmost with idle between the constants,
+  a failed focus read. **UNKNOWN is treated as PRESENT for escalation** -
+  it never activates, never raises the level, never triple-beeps.
+
+**Escalation.** The one place the non-activating design (§10) is ever
+overridden. Preconditions: state ABSENT - never UNKNOWN. Sequence, in order,
+on the main thread:
+
+1. `NSApp.activate(ignoringOtherApps: true)`
+2. `panel.makeKeyAndOrderFront(nil)`
+3. `panel.level = .screenSaver` - stays for the invocation's lifetime,
+   never downgraded
+4. Triple beep: three `NSSound.beep()` calls 0.25s apart
+
+Fires once per invocation and **stays fired**: a later PRESENT re-attaches
+no cancel, replays no beep, and never hands key or level back - the panel is
+already in the human's face; answer or close it. Parallel invocations (§9)
+each run the detector; concurrent escalations stack at the raised level and
+the most recent holds key.
+
+**Timing.**
+
+- Panel appear is never delayed (§10). The first evaluation lands within
+  **1s** of appear and carries the appear beep (§6).
+- ABSENT at the first evaluation escalates **immediately**;
+  `--interrupt-after` does not delay the launch case - the absence predates
+  the question. A caller who wants that case deferred raises
+  `--absent-after` instead (a higher threshold keeps the launch state in
+  row 4/6 until the idle truly accumulates).
+- Mid-flight: re-evaluate every **1s**. ABSENT must hold on consecutive
+  ticks for `--interrupt-after` seconds (default 0: the first ABSENT tick
+  escalates; N = N consecutive ABSENT ticks). Any non-ABSENT tick cancels
+  the pending hold. Fire on the tick that completes the hold.
+- Escalation never touches the give-up bound: `--give-up-after` keeps
+  draining; a panel whose human never returns still gives up (§6) and
+  prints `GAVE-UP`.
+
+**Beep policy.**
+
+| State at first evaluation | Beep |
+| --- | --- |
+| PRESENT | single, as today |
+| UNKNOWN | single |
+| ABSENT | triple, as part of the escalation |
+
+`--no-beep` silences all of it; the escalation's other three steps still
+run. In a sequence the policy is evaluated once at sequence start, never per
+step (§12).
+
+**CLI (additive).**
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| - | on | Detection + escalation run unless disabled |
+| `--interrupt-after SECONDS` | 0 | Mid-flight ABSENT hold before escalation; 0 = immediately on ABSENT |
+| `--absent-after SECONDS` | 20 | Idle-seconds threshold for truth-table row 5 |
+| `--no-attention` | off | No detection, no escalation: panel behaves exactly as v0.2.0 |
+
+- `SECONDS` takes non-negative integers; violations are usage errors (exit
+  1, flag named on stderr, nothing on stdout). `--help` documents all three.
+- `--no-attention` **conflicts** with `--interrupt-after` and
+  `--absent-after` (exit 1, conflict named) - §12's rule: silent precedence
+  hides a broken caller. `--no-attention` and `--no-beep` are orthogonal:
+  one kills the brain, the other the sound.
+- **No per-question attention fields in v1.** The batch schema (§12) gains
+  nothing: attention is a human-level setting, not a question-level one.
+- **AppleScript fallback:** `ask.sh` forwards the flags and the fallback
+  accepts them as inert - `display dialog` has no attention model and
+  behaves exactly as today. Same documented-renderer-limitation pattern as
+  `--questions-file` there.
+
+**Named constants.**
+
+| Constant | Value | Role |
+| --- | --- | --- |
+| `PRESENT_IDLE_MAX_SECONDS` | 3 | Row 4 fresh-input window |
+| `ABSENT_AFTER_DEFAULT_SECONDS` | 20 | Row 5 idle threshold (flag default) |
+| `INTERRUPT_AFTER_DEFAULT_SECONDS` | 0 | Mid-flight ABSENT hold (flag default) |
+| `ATTENTION_TICK_SECONDS` | 1 | Detection cadence |
+| `FIRST_EVALUATION_DEADLINE_SECONDS` | 1 | First evaluation after appear |
+| `BEEP_GAP_SECONDS` | 0.25 | Triple-beep spacing |
+| `MAX_ANCESTOR_HOPS` | 32 | Identification walk cap |
+| `TMUX_PROBE_TIMEOUT_SECONDS` | 2 | Attach probe subprocess budget |
+
+**What the implementer cannot verify headlessly.** The implementation is
+delegated to a worker with no screen. The worker CAN verify offline: flag
+parsing, defaults, and conflicts (exit 1 cases); `--help` text;
+`--no-attention` equivalence to v0.2.0 through the existing behavioral and
+posted-event suites; the tmux probe's parse against a scripted detached
+session; and that all probes return rather than crash without a GUI
+session. The worker CANNOT verify live focus, real idle, or sleep state -
+these need a human at the display:
+
+1. **Present:** with the terminal frontmost, ask and keep working - single
+   beep, no activation, host app keeps focus.
+2. **Absent:** switch to another app, hands off (`--absent-after 5` to
+   shorten) - panel activates, sits above everything, triple-beeps; answer
+   it while escalated.
+3. **Stays fired:** after escalation, click back to the terminal - the
+   panel keeps its level and key status and still answers normally.
+4. **Hold then cancel:** `--interrupt-after 10 --absent-after 5` - go away
+   ~6s, return before 10s - no activation happened.
+5. **Detach:** inside tmux, ask, detach (prefix `d`), `--absent-after 5` -
+   escalation follows within ~1.5s of the detach even with the terminal
+   frontmost; reattach and answer.
+6. **Hard absence:** start the screensaver (or let the display sleep) with
+   a panel open - escalation; on wake the panel is frontmost at the raised
+   level. This run also confirms the `com.apple.screensaver` process check
+   on this macOS.
+7. **Unknown shape:** run the panel from an IDE task runner or remote shell
+   with no GUI terminal ancestor - panel appears, single beep, never
+   escalates for the whole bound (leave the machine idle past
+   `--absent-after`).
+8. **`--no-attention`:** repeat scenario 2 - single beep, no activation,
+   v0.2.0 behavior.
+
+---
+
 Design provenance: spec authored by design-agent under the impeccable
 workflow; decisions and machine-made calls are recorded in `ledger.tsv`
 (git-ignored). Proportion check artifact: `.scratch/ask-away-design/mock2.png`
@@ -817,4 +1055,7 @@ real-use defect reports; evidence and machine-made calls in
 `.scratch/ask-away-v011/ledger.tsv` (git-ignored). The custom-answer-field
 amendment (§13) was authored 2026-10-04 by design-agent against a fixed
 caller brief; machine-made calls in ledger rows D25-D27, contrast
-arithmetic in `.scratch/ask-away-fieldamend/contrast.py` (git-ignored).
+arithmetic in `.scratch/ask-away-fieldamend/contrast.py` (git-ignored). The
+attention-aware-escalation amendment (§14) was authored 2026-10-04 by
+design-agent against a fixed caller brief; machine-made calls in ledger rows
+D28-D30, signal probes in `.scratch/ask-away-attention/` (git-ignored).

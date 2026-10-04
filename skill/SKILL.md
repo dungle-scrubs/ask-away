@@ -59,6 +59,27 @@ Closing leaves the decision unanswered and supplies no approval. Take no
 default or best-effort recommendation after `CLOSED`; re-ask in the session
 UI. Keep answers already collected in a batch.
 
+## Attention
+
+The native panel escalates when it is confident the human is away: the
+launch terminal is not frontmost and the machine has seen no input for a
+while (`--absent-after`, default 20s), the tmux session is detached, or the
+display is asleep. Escalation activates ask-away, pulls the panel above
+everything, and triple-beeps - immediately at launch if the human is
+already away, otherwise once "away" holds for `--interrupt-after` seconds
+(default 0). What an agent can rely on:
+
+- A panel left unanswered while the human is away forces itself on them.
+  No re-polling, no re-asking in a loop; ask once and wait on stdout.
+- Ambiguous conditions - SSH, unknown terminals, unreadable focus - count
+  as present and never steal focus. Escalation only fires on high
+  confidence.
+- `CLOSED` still means what it always meant: the human dismissed the panel
+  deliberately; take it back to chat.
+- `--no-attention` turns detection and escalation off - use it for tests,
+  CI, and any context where focus must not move.
+- The AppleScript fallback has no attention model and ignores the flags.
+
 ## Body text scope (markdown)
 
 `--text` renders block markup, not just one paragraph: paragraphs, fenced
