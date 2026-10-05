@@ -44,6 +44,15 @@ final class LiveAttentionEngine: AttentionProbeSource {
     private var clientResolutionPending = false
     private var hostingReading: HostingReading = .pending
     private var visibilityReading: VisibilityReading = .noSignal
+    /// Visibility freshness (lead review round 2, finding 8): an
+    /// inventory refresh in flight holds the previous reading so
+    /// accrual continues across the normal one-tick refresh, but past
+    /// visibilityStaleSeconds the held reading is stale and reads as
+    /// no signal (UNKNOWN) - a slow refresh can never let a stale
+    /// zero escalate.
+    private var inventoryInFlight = false
+    private var inventoryStartedAt: Double?
+    private var lastSnapshotNow: Double?
     /// Bumped whenever published identity state becomes stale; evidence
     /// publishes only when its captured generation still matches.
     private var evidenceGeneration = 0
@@ -106,10 +115,23 @@ final class LiveAttentionEngine: AttentionProbeSource {
     /// the one synchronous read left here: it is two cheap main-thread
     /// queries (CGDisplayIsAsleep plus a running-apps scan).
     func readSnapshot(now: Double) -> AttentionSnapshot {
-        AttentionSnapshot(
+        lastSnapshotNow = now
+        var visibility = visibilityReading
+        if inventoryInFlight {
+            if let started = inventoryStartedAt {
+                if now - started > AttentionConstants.visibilityStaleSeconds {
+                    // The refresh is past the staleness bound: the held
+                    // reading no longer establishes current visibility.
+                    visibility = .noSignal
+                }
+            } else {
+                inventoryStartedAt = now
+            }
+        }
+        return AttentionSnapshot(
             now: now,
             hosting: hostingReading,
-            visibility: visibilityReading,
+            visibility: visibility,
             attachment: attachment,
             hardAbsence: AttentionProbe.readHardAbsence()
         )
@@ -173,6 +195,8 @@ final class LiveAttentionEngine: AttentionProbeSource {
     private func refreshHostingEvidence() {
         guard discoveryDone else { return }
         guard evidenceTask == nil else { return }
+        inventoryInFlight = true
+        if inventoryStartedAt == nil { inventoryStartedAt = lastSnapshotNow }
         let hosts: [Int32]
         if let directHost {
             hosts = [directHost]
@@ -186,6 +210,8 @@ final class LiveAttentionEngine: AttentionProbeSource {
             // never escalation).
             hostingReading = clientResolutionPending ? .pending : .unidentified
             visibilityReading = .noSignal
+            inventoryInFlight = false
+            inventoryStartedAt = nil
             return
         }
         let generation = evidenceGeneration
@@ -201,6 +227,8 @@ final class LiveAttentionEngine: AttentionProbeSource {
                 guard let self, !Task.isCancelled else { return }
                 self.evidenceTask = nil
                 guard self.evidenceGeneration == generation else { return }
+                self.inventoryInFlight = false
+                self.inventoryStartedAt = nil
                 if let owners, !owners.isEmpty {
                     self.hostingReading = .identified(hostPIDs: owners)
                     self.visibilityReading = visibility
@@ -242,6 +270,11 @@ final class LiveAttentionEngine: AttentionProbeSource {
         clientHosts = []
         clientResolutionPending = false
         lastResolvedTTYs = nil
+        // Membership changed: published visibility evidence is stale
+        // immediately (lead review round 2, finding 8).
+        visibilityReading = .noSignal
+        inventoryInFlight = false
+        inventoryStartedAt = nil
         evidenceGeneration += 1
     }
 

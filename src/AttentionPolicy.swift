@@ -12,6 +12,10 @@ enum AttentionConstants {
     static let interruptAfterDefaultSeconds: Double = 0
     /// Detection cadence.
     static let attentionTickSeconds: Double = 1
+    /// An inventory refresh in flight holds the previous visibility
+    /// reading for accrual, but past this bound the held reading is
+    /// stale and reads as no signal (review finding 8, round 2).
+    static let visibilityStaleSeconds: Double = 3
     /// The first evaluation must complete within this window of appear.
     static let firstEvaluationDeadlineSeconds: Double = 1
     /// Triple-beep spacing.

@@ -490,10 +490,26 @@ enum AttentionDetectionTests {
             let started = Date()
             let result = await MultiplexerProbe.runTmuxClients(socket: "/unused", sessionTarget: "0", timeout: 2, executable: lateEOFScript)
             let elapsed = Date().timeIntervalSince(started)
+            // Incomplete drainage is NO SIGNAL since the round-2 drain
+            // fix (lead review, finding 7 residual): partial bytes from
+            // a hung pipe are never a usable reading.
             check(
-                "delayed EOF from a grandchild is bounded past the child exit",
-                result.exitStatus == 0 && result.stdout == "ok\n" && elapsed < 1.2,
+                "delayed EOF from a grandchild is bounded past the child exit and reads no signal",
+                result.exitStatus == nil && result.stdout == nil && elapsed < 1.2
+                    && MultiplexerProbe.parseTmuxClients(exitStatus: result.exitStatus, stdout: result.stdout) == .noSignal,
                 "elapsed \(elapsed)s result \(result)"
+            )
+        }
+        do {
+            // Empty partial output held past the drain deadline: the
+            // specific detached-forgery shape from lead finding 7.
+            let emptyLateEOFScript = script("empty-late-eof.sh", "sh -c 'sleep 3' &\nexit 0\n")
+            let result = await MultiplexerProbe.runTmuxClients(socket: "/unused", sessionTarget: "0", timeout: 2, executable: emptyLateEOFScript)
+            check(
+                "empty incomplete drain is no signal, never detached",
+                result.exitStatus == nil && result.stdout == nil
+                    && MultiplexerProbe.parseTmuxClients(exitStatus: result.exitStatus, stdout: result.stdout) == .noSignal,
+                "\(result)"
             )
         }
         do {

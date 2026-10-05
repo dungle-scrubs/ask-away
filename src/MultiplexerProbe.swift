@@ -192,8 +192,11 @@ enum MultiplexerProbe {
             } else if needsDrainDeadline {
                 // The child exited but EOF has not arrived: an inherited
                 // write descriptor (a grandchild) can hold the pipe open
-                // indefinitely. Bound the drain instead of waiting.
-                let work = DispatchWorkItem { [weak self] in self?.complete() }
+                // indefinitely. Bound the drain instead of waiting. The
+                // evidence is incomplete - whatever bytes arrived are not
+                // a usable reading, so complete as no signal (never as a
+                // zero-byte success, which would parse as detached).
+                let work = DispatchWorkItem { [weak self] in self?.completeAsNoSignal() }
                 lock.lock()
                 drainDeadlineWork = work
                 lock.unlock()
