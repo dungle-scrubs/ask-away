@@ -153,17 +153,18 @@ final class PanelRootView: NSView {
         self.closeButton = closeButton
 
         let seconds = NSHostingView(rootView: CountdownView(countdown: countdown))
-        seconds.frame = NSRect(x: Theme.horizontalPadding, y: 4, width: 80, height: Theme.metadataHeight)
+        seconds.frame = NSRect(x: Theme.horizontalPadding, y: Theme.countdownY, width: 80, height: Theme.metadataHeight)
         content.addSubview(seconds)
 
         // Body region: the only elastic element (section 1). An explicit
         // NSScrollView so scroller style is forced overlay regardless of the
         // system's scroll-bar setting - never a reserved gutter (section 10).
-        // The answer field block (section 13) sits under the button row, so
-        // the body's bottom rises by the same 36pt the buttons shifted.
+        // The answer field block (section 13) sits under the button row,
+        // above the countdown band, so the body's bottom rises by the same
+        // amount the buttons shifted.
         let bodyFrame = NSRect(
             x: Theme.horizontalPadding,
-            y: Theme.bottomPadding + Theme.fieldBlockHeight + buttonBlockHeight(rows: buttonRows) + Theme.bodyToButtons,
+            y: Theme.contentBaseY + Theme.fieldBlockHeight + buttonBlockHeight(rows: buttonRows) + Theme.bodyToButtons,
             width: panelRect.width - 2 * Theme.horizontalPadding,
             height: bodyRegion
         )
@@ -179,16 +180,16 @@ final class PanelRootView: NSView {
 
         swapButtons(buttons, rows: buttonRows)
 
-        // The answer field (section 13): full inner width at the
-        // bottom-padding band, inside contentStack so the section 12
-        // transition snapshots it with the rest of the step content. It is
-        // added after the buttons so the AX element order follows them.
-        field.frame = NSRect(
+        // The answer field (section 13): full inner width above the
+        // countdown band, inside contentStack so the section 12 transition
+        // snapshots it with the rest of the step content. It is added after
+        // the buttons so the AX element order follows them.
+        field.place(in: NSRect(
             x: Theme.horizontalPadding,
-            y: Theme.bottomPadding,
+            y: Theme.contentBaseY,
             width: panelRect.width - 2 * Theme.horizontalPadding,
             height: Theme.answerFieldHeight
-        )
+        ))
         stack.addSubview(field)
         answerField = field
 
@@ -353,7 +354,7 @@ final class PanelRootView: NSView {
     /// gap, both rows right-aligned, reading order preserved, and every
     /// button keeps its full 30 x width frame - wrapping never shrinks hit
     /// targets (section 12). The whole block sits above the answer field's
-    /// 36pt band (section 13).
+    /// band and the countdown band (section 13; Theme.contentBaseY).
     func swapButtons(_ newButtons: [ChamferButton], rows: [[CGFloat]]) {
         for button in buttons {
             button.removeFromSuperview()
@@ -367,7 +368,7 @@ final class PanelRootView: NSView {
             let totalWidth = row.reduce(0, +) + CGFloat(max(0, row.count - 1)) * Theme.buttonGap
             var x = panelWidth - Theme.horizontalPadding - totalWidth
             // First row on top when wrapped; the tail row sits at the bottom.
-            let y = Theme.bottomPadding + Theme.fieldBlockHeight
+            let y = Theme.contentBaseY + Theme.fieldBlockHeight
                 + CGFloat(rowCount - 1 - rowIndex) * (Theme.buttonRowHeight + Theme.secondRowGap)
             for width in row {
                 guard index < newButtons.count else { break }
@@ -411,6 +412,41 @@ final class PanelRootView: NSView {
         layer.zPosition = 100
         layer.masksToBounds = true
         return layer
+    }
+}
+
+/// Production escalation effects against the live panel, in the section 14
+/// order. The activation spelling is the macOS 13 floor-legal one; the
+/// macOS 14 deprecation is expected and must not be upgraded past the
+/// floor. Lives beside the panel it drives (AttentionController stays
+/// compilable without the UI tree, so detection tests can exercise the
+/// engine headlessly).
+@MainActor
+final class PanelAttentionEffects: AttentionEffectsObserver {
+    private weak var panel: AskPanel?
+
+    init(panel: AskPanel) {
+        self.panel = panel
+    }
+
+    func activateApplication() {
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func makeKeyAndOrderFront() {
+        panel?.makeKeyAndOrderFront(nil)
+    }
+
+    func raiseLevelToScreenSaver() {
+        panel?.level = .screenSaver
+    }
+
+    func playEscalationBeep(index: Int) {
+        NSSound.beep()
+    }
+
+    func playAppearBeep() {
+        NSSound.beep()
     }
 }
 
@@ -741,6 +777,13 @@ final class PanelController {
         let answerField = AnswerField(frame: .zero)
         let editorProvider = AnswerFieldEditorProvider()
         editorProvider.answerField = answerField
+        // The become-key moment is where the key-view-loop focus steal
+        // lands (makeKey on a non-activating panel takes effect a turn
+        // later, and AppKit can re-resolve the initial responder then);
+        // the pin is re-asserted at exactly that event.
+        editorProvider.onPanelBecameKey = { [weak self] in
+            self?.enforceInitialFocusPin()
+        }
         panel.delegate = editorProvider
         fieldEditorProvider = editorProvider
 
@@ -776,6 +819,14 @@ final class PanelController {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, !self.finished else { return event }
             guard let panel = self.panel, event.window === panel else { return event }
+
+            // The focus pin runs ahead of every key: if the makeKey key-view
+            // steal left the field holding focus the panel never asked for
+            // (section 13: initial focus is never the field), the first key
+            // event is exactly the deterministic moment to undo it - no
+            // timer, and a user-acquired focus flag keeps it from touching
+            // deliberate focus.
+            self.enforceInitialFocusPin()
 
             // Escape before the field editor, whatever the focus.
             if event.keyCode == 53 {
@@ -846,6 +897,12 @@ final class PanelController {
             // Printable capture (section 13): a single printable character
             // typed while the field is unfocused focuses the field and
             // redispatches the original event to its editor exactly once.
+            // The redispatch runs only on a VERIFIED responder -
+            // makeFirstResponder's Bool alone is not proof in this
+            // non-activating panel (measured: it returns true with the
+            // editor installed while the responder never moves) - so an
+            // unverified transition passes the key through instead of
+            // swallowing it (finding 1).
             if
                 !self.redispatchingFieldEvent,
                 let field = self.root?.answerField,
@@ -853,7 +910,11 @@ final class PanelController {
                 Self.isPrintableKey(event)
             {
                 self.redispatchingFieldEvent = true
-                if field.focus(in: panel) {
+                if !panel.isKeyWindow {
+                    panel.makeKey()
+                }
+                field.focus(in: panel)
+                if field.isFocused(in: panel) {
                     NSApp.sendEvent(event)
                     self.redispatchingFieldEvent = false
                     return nil
@@ -1066,13 +1127,35 @@ final class PanelController {
         panel.makeKey()
         // makeKey can hand initial focus to the field through the key-view
         // loop even with initialFirstResponder pinned to the default button
-        // (reproduced bare). Re-assert the pinned responder so the panel
-        // enters its first frame with Return on the default button
-        // (sections 10 and 13: the field never takes initial focus).
-        if let initial = initialDefaultButton {
-            panel.makeFirstResponder(initial)
+        // (reproduced bare), and the same steal can land a turn later when
+        // the window actually becomes key. The correction is deterministic,
+        // not timed: the pin is re-asserted here, on the next main-queue
+        // turn, on every windowDidBecomeKey, and ahead of every key event
+        // (see enforceInitialFocusPin) - and it never touches focus the
+        // user deliberately acquired (the field's userFocusAcquired flag,
+        // set only by real user input).
+        enforceInitialFocusPin()
+        DispatchQueue.main.async { [weak self] in
+            self?.enforceInitialFocusPin()
         }
         animateEntrance(layer: layer)
+    }
+
+    /// Re-assert the pinned initial responder (sections 10 and 13: initial
+    /// focus is never the field). Runs only when the field's editor holds
+    /// the responder WITHOUT user-initiated focus - the flag is set solely
+    /// by real user input (a key or mouse event driving editing), so no
+    /// correction can remove deliberately acquired focus, and a deferred
+    /// click transition is applied instead of overridden.
+    private func enforceInitialFocusPin() {
+        guard !finished, let panel, let field = root?.answerField else { return }
+        if field.applyPendingBecomeKeyFocus(in: panel) { return }
+        guard field.isFocused(in: panel), !field.userFocusAcquired else { return }
+        let pinned = initialDefaultButton ?? currentDefaultButton
+        if let pinned {
+            panel.makeFirstResponder(pinned)
+            field.refreshFocusState(panel: panel)
+        }
     }
 
     /// Entrance: opacity 0->1 and scale 0.98->1.0 about the center, 180ms,

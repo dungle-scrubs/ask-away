@@ -65,8 +65,8 @@ ask-away --questions-file questions.json   # or - to read stdin
 | `--no-beep` | Suppress the appearance beep and the escalation triple-beep. |
 | `--absent-after S` | Seconds (default 20) the hosting window must be entirely off screen before "away" is confirmed and the panel may escalate. |
 | `--interrupt-after S` | Seconds "away" must hold before the panel escalates (default 0 = immediately). |
-| `--no-attention` | Disable attention detection and escalation entirely; the panel behaves exactly as without it. Conflicts with the two flags above (exit 1). |
-| `--questions-file PATH` | Walk 1-10 questions in one panel (batch mode). Mutually exclusive with every flag above. `-` reads the document from stdin to EOF. |
+| `--no-attention` | Disable attention detection and escalation entirely; the panel behaves exactly as without it. Conflicts with the two flags above (exit 1). Works with both invocation modes. |
+| `--questions-file PATH` | Walk 1-10 questions in one panel (batch mode). Mutually exclusive with every single-question flag above (`--title`, `--text`, `--buttons`, `--default`, `--give-up-after`, `--no-beep`); the attention flags above are invocation-level and work with it. `-` reads the document from stdin to EOF. |
 
 Single-question output:
 

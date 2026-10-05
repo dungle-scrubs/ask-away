@@ -43,7 +43,10 @@ question. The recommended answer is the dialog's default button.
   recommended one and takes Return unless `--default N` moves it.
 - The dialog carries the question; the agent's reply carries the details.
   When details exist, the dialog text says where to find them.
-- A beep sounds before the dialog unless `--no-beep`.
+- A beep sounds when the dialog appears unless `--no-beep`. With attention
+  on, the beep follows the first attention evaluation (within a second of
+  appearance), and becomes the escalation triple when the human provably
+  cannot see the panel.
 
 ## Reading the answer
 
@@ -72,11 +75,14 @@ already provable (detached client, sleeping display), otherwise once
 "away" holds for `--interrupt-after` seconds (default 0). What an agent can
 rely on:
 
-- A panel left unanswered while the human is away forces itself on them.
-  No re-polling, no re-asking in a loop; ask once and wait on stdout.
+- A panel left unanswered while the human is provably away - hosting
+  window off screen for `--absent-after` seconds, a detached tmux client,
+  a sleeping display or screensaver - forces itself on them. No
+  re-polling, no re-asking in a loop; ask once and wait on stdout.
 - Ambiguous conditions - SSH, no local GUI ancestor, a multiplexer client
-  that cannot be resolved - count as visible and never steal focus.
-  Escalation only fires on proven absence.
+  that cannot be resolved - read UNKNOWN and never steal focus. If the
+  human is merely away in an unverifiable way, the panel waits out the
+  bound and gives up; escalation only fires on proven absence.
 - `CLOSED` still means what it always meant: the human dismissed the panel
   deliberately; take it back to chat.
 - `--no-attention` turns detection and escalation off - use it for tests,

@@ -99,7 +99,8 @@ enum AttentionProbe {
         case onScreen
     }
 
-    /// CGWindowListCopyWindowInfo as typed records, or nil on a failed read.
+    /// CGWindowListCopyWindowInfo as typed records, or nil on a failed
+    /// read. Row parsing lives in `parseWindowEntries`.
     static func readWindows(scope: WindowScope) -> [WindowRecord]? {
         let options: CGWindowListOption = scope == .full
             ? []
@@ -107,23 +108,37 @@ enum AttentionProbe {
         guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return nil
         }
+        return parseWindowEntries(list)
+    }
+
+    /// Raw window-list rows into typed records. One malformed row
+    /// invalidates the whole inventory (nil): a row missing its owner pid,
+    /// layer, window number, or complete numeric bounds is
+    /// indistinguishable from the hosting app's own row, and silently
+    /// dropping or zero-defaulting it could turn an unreadable host into a
+    /// successful zero-window observation (review finding 9). nil is no
+    /// signal, so the failure direction is safe: it can only suppress
+    /// escalation, never cause it.
+    static func parseWindowEntries(_ list: [[String: Any]]) -> [WindowRecord]? {
         var records: [WindowRecord] = []
         records.reserveCapacity(list.count)
         for entry in list {
             guard
                 let owner = entry[kCGWindowOwnerPID as String] as? Int,
                 let layer = entry[kCGWindowLayer as String] as? Int,
-                let number = entry[kCGWindowNumber as String] as? Int
-            else { continue }
-            var bounds = CGRect.zero
-            if let raw = entry[kCGWindowBounds as String] as? [String: Any] {
-                let x = raw["X"] as? Double ?? 0
-                let y = raw["Y"] as? Double ?? 0
-                let w = raw["Width"] as? Double ?? 0
-                let h = raw["Height"] as? Double ?? 0
-                bounds = CGRect(x: x, y: y, width: w, height: h)
-            }
-            records.append(WindowRecord(ownerPID: Int32(owner), layer: layer, bounds: bounds, windowNumber: number))
+                let number = entry[kCGWindowNumber as String] as? Int,
+                let raw = entry[kCGWindowBounds as String] as? [String: Any],
+                let x = raw["X"] as? Double,
+                let y = raw["Y"] as? Double,
+                let width = raw["Width"] as? Double,
+                let height = raw["Height"] as? Double
+            else { return nil }
+            records.append(WindowRecord(
+                ownerPID: Int32(owner),
+                layer: layer,
+                bounds: CGRect(x: x, y: y, width: width, height: height),
+                windowNumber: number
+            ))
         }
         return records
     }
@@ -159,6 +174,8 @@ enum AttentionProbe {
         var visited: Set<Int32> = []
         var hops = 0
         while pid > 1, hops < AttentionConstants.maxAncestorHops {
+            // The walk runs inside a cancellable task; stop between hops.
+            if Task.isCancelled { return nil }
             hops += 1
             if !visited.insert(pid).inserted { return nil }
             if let host = qualifyingHost(pid: pid, readers: readers) {
@@ -231,14 +248,19 @@ enum AttentionProbe {
     static func readHostingVisibility(ownerPIDs: [Int32]?) -> VisibilityReading {
         guard let ownerPIDs, !ownerPIDs.isEmpty else { return .noSignal }
         guard let windows = readWindows(scope: .onScreen) else { return .noSignal }
+        return .count(qualifyingOnScreenCount(windows: windows, ownerPIDs: ownerPIDs))
+    }
+
+    /// The production on-screen predicate, shared by the live read and the
+    /// synthetic tests: no test re-implements the filter (finding 9).
+    static func qualifyingOnScreenCount(windows: [WindowRecord], ownerPIDs: [Int32]) -> Int {
         let minimum = AttentionConstants.minOnscreenWindowDimensionPoints
-        let count = windows.filter { record in
+        return windows.filter { record in
             ownerPIDs.contains(record.ownerPID)
                 && record.layer == AttentionConstants.hostingWindowLayer
                 && record.bounds.width >= minimum
                 && record.bounds.height >= minimum
         }.count
-        return .count(count)
     }
 
     /// Display asleep or screensaver running. Failed reads default awake

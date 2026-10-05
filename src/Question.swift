@@ -127,8 +127,9 @@ struct Question {
                              {"results":[{"index":0,"status":"answered","answer":"..."},...],
                              "stopped_at":N} on stdout.
 
-    Single-question output (stdout): the clicked button's text, or CANCELED,
-    GAVE-UP, or CLOSED.
+    Single-question output (stdout): the clicked button's text,
+    the typed answer string (Return with the answer field focused and
+    non-empty), or CANCELED, GAVE-UP, or CLOSED.
     Exit codes (both modes): 0 answered (batch: every question) | 2 canceled
     (Escape or single-question Cancel; batch: sequence stopped on Escape) |
     3 gave up (batch: a step's bound
@@ -143,7 +144,9 @@ struct Question {
     left above the drain origin.
 
     A panel appears over the current app, on the screen holding the pointer,
-    and never activates or steals focus. Parallel invocations cascade.
+    and never activates or steals focus. The one exception is attention
+    escalation (above): it activates ask-away and pulls the panel front only
+    on proven absence. Parallel invocations cascade.
     """
 
     /// Parse argv into an invocation plus attention configuration. Sequence

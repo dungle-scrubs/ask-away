@@ -1,3 +1,5 @@
+import AppKit
+import CoreGraphics
 import Foundation
 
 // Synthetic detection checks: ancestry walk, helper ownership, window
@@ -7,7 +9,7 @@ import Foundation
 // clearly marked live smoke that only asserts the walk terminates.
 //
 // Build: swiftc -swift-version 6 src/AttentionPolicy.swift src/AttentionProbe.swift \
-//   src/MultiplexerProbe.swift tests/attention-detection.swift -o attention-detection
+//   src/MultiplexerProbe.swift src/AttentionController.swift tests/attention-detection.swift -o attention-detection
 
 @main
 enum AttentionDetectionTests {
@@ -328,22 +330,80 @@ enum AttentionDetectionTests {
             check("nonexistent tty resolves no client", MultiplexerProbe.clientPIDs(forTTYs: ["/dev/ttys9999"], snapshot: snapshot) == [])
         }
 
-        // MARK: Visibility reading (synthetic through the dimension filter)
+        // MARK: Window-row parsing (production parser, finding 9)
 
         do {
-            // The on-screen filter itself is live; test the dimension and
-            // layer rules through a direct filter mirror of the production
-            // predicate, plus a live smoke below.
-            let minimum = AttentionConstants.minOnscreenWindowDimensionPoints
-            let tiny = AttentionProbe.WindowRecord(ownerPID: 100, layer: 0, bounds: CGRect(x: 0, y: 0, width: 0, height: 10), windowNumber: 1)
-            let flat = AttentionProbe.WindowRecord(ownerPID: 100, layer: 0, bounds: CGRect(x: 0, y: 0, width: 10, height: 0.5), windowNumber: 2)
-            let good = AttentionProbe.WindowRecord(ownerPID: 100, layer: 0, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), windowNumber: 3)
-            let qualified = [tiny, flat, good].filter { record in
-                record.layer == AttentionConstants.hostingWindowLayer
-                    && record.bounds.width >= minimum
-                    && record.bounds.height >= minimum
+            let valid: [String: Any] = [
+                kCGWindowOwnerPID as String: 100,
+                kCGWindowLayer as String: 0,
+                kCGWindowNumber as String: 5,
+                kCGWindowBounds as String: ["X": 1.0, "Y": 2.0, "Width": 500.0, "Height": 300.0],
+            ]
+            let records = AttentionProbe.parseWindowEntries([valid])
+            check(
+                "valid window rows parse into typed records",
+                records?.count == 1 && records?.first?.ownerPID == 100 && records?.first?.bounds.width == 500,
+                "\(String(describing: records))"
+            )
+        }
+        do {
+            func row(_ mutate: (inout [String: Any]) -> Void) -> [[String: Any]] {
+                var entry: [String: Any] = [
+                    kCGWindowOwnerPID as String: 100,
+                    kCGWindowLayer as String: 0,
+                    kCGWindowNumber as String: 5,
+                    kCGWindowBounds as String: ["X": 1.0, "Y": 2.0, "Width": 500.0, "Height": 300.0],
+                ]
+                mutate(&entry)
+                return [entry]
             }
-            check("zero-dimension windows are excluded, 1pt qualifies", qualified.count == 1 && qualified.first?.windowNumber == 3)
+            check("row missing owner pid invalidates the inventory", AttentionProbe.parseWindowEntries(row { $0.removeValue(forKey: kCGWindowOwnerPID as String) }) == nil)
+            check("row missing layer invalidates the inventory", AttentionProbe.parseWindowEntries(row { $0.removeValue(forKey: kCGWindowLayer as String) }) == nil)
+            check("row missing window number invalidates the inventory", AttentionProbe.parseWindowEntries(row { $0.removeValue(forKey: kCGWindowNumber as String) }) == nil)
+            check("row missing bounds invalidates the inventory", AttentionProbe.parseWindowEntries(row { $0.removeValue(forKey: kCGWindowBounds as String) }) == nil)
+            check(
+                "row with partial bounds invalidates the inventory",
+                AttentionProbe.parseWindowEntries(row {
+                    var bounds = ($0[kCGWindowBounds as String] as? [String: Any]) ?? [:]
+                    bounds.removeValue(forKey: "Height")
+                    $0[kCGWindowBounds as String] = bounds
+                }) == nil
+            )
+            check(
+                "one malformed row beside a valid one still invalidates",
+                AttentionProbe.parseWindowEntries([
+                    [
+                        kCGWindowOwnerPID as String: 100,
+                        kCGWindowLayer as String: 0,
+                        kCGWindowNumber as String: 5,
+                        kCGWindowBounds as String: ["X": 0.0, "Y": 0.0, "Width": 10.0, "Height": 10.0],
+                    ],
+                    [kCGWindowOwnerPID as String: 200, kCGWindowLayer as String: 0],
+                ]) == nil
+            )
+        }
+
+        // MARK: Visibility reading (production predicate, no mirror)
+
+        do {
+            func raw(_ owner: Int, _ layer: Int, _ w: Double, _ h: Double, _ number: Int) -> [String: Any] {
+                [
+                    kCGWindowOwnerPID as String: owner,
+                    kCGWindowLayer as String: layer,
+                    kCGWindowNumber as String: number,
+                    kCGWindowBounds as String: ["X": 0.0, "Y": 0.0, "Width": w, "Height": h],
+                ]
+            }
+            let list = [
+                raw(100, 0, 0, 10, 1),   // zero width: excluded
+                raw(100, 0, 10, 0.5, 2), // flat: excluded
+                raw(100, 0, 1, 1, 3),    // 1pt qualifies
+                raw(100, 25, 50, 50, 4), // non-zero layer: excluded
+                raw(999, 0, 50, 50, 5),  // other owner: excluded
+            ]
+            let parsed = AttentionProbe.parseWindowEntries(list)!
+            let count = AttentionProbe.qualifyingOnScreenCount(windows: parsed, ownerPIDs: [100])
+            check("production predicate counts exactly the qualifying windows", count == 1)
         }
         check(
             "live on-screen inventory read succeeds on this machine",
@@ -380,6 +440,15 @@ enum AttentionDetectionTests {
         let attachedScript = script("attached.sh", "printf '/dev/ttys042: v03 [80x24 xterm-256color] (attached,focused,UTF-8)\\n'\nexit 0\n")
         let exitOneScript = script("exit1.sh", "echo 'error' >&2\nexit 1\n")
         let slowScript = script("slow.sh", "sleep 3\nexit 0\n")
+        // Ignores SIGTERM: only the budget-bounded completion (and the
+        // post-completion KILL) can end it (finding 7).
+        let ignoreTermScript = script("ignore-term.sh", "trap '' TERM\nsleep 5\nexit 0\n")
+        // Exits immediately while a grandchild inherits stdout and holds it
+        // open: EOF never arrives on its own (finding 7).
+        let lateEOFScript = script("late-eof.sh", "sh -c 'sleep 3' &\nprintf 'ok\\n'\nexit 0\n")
+        // Exit 0 with undecodable bytes: decode failure must be no signal,
+        // never an empty string that parses as detached (finding 6).
+        let invalidUTF8Script = script("invalid-utf8.sh", "printf '\\xff\\xfe\\xc3\\x28\\n'\nexit 0\n")
 
         do {
             let result = await MultiplexerProbe.runTmuxClients(socket: "/unused", sessionTarget: "0", timeout: 2, executable: attachedScript)
@@ -402,17 +471,153 @@ enum AttentionDetectionTests {
             let result = await MultiplexerProbe.runTmuxClients(socket: "/unused", sessionTarget: "0", timeout: 0.5, executable: slowScript)
             let elapsed = Date().timeIntervalSince(started)
             check(
-                "timeout kills the owned child inside the budget and is no signal",
-                result.exitStatus == nil && elapsed < 2.5,
+                "timeout completes as no signal inside the budget",
+                result.exitStatus == nil && result.stdout == nil && elapsed < 1.0,
                 "elapsed \(elapsed)s result \(result)"
             )
         }
         do {
+            let started = Date()
+            let result = await MultiplexerProbe.runTmuxClients(socket: "/unused", sessionTarget: "0", timeout: 0.5, executable: ignoreTermScript)
+            let elapsed = Date().timeIntervalSince(started)
+            check(
+                "termination-resistant child still completes within the budget",
+                result.exitStatus == nil && result.stdout == nil && elapsed < 1.0,
+                "elapsed \(elapsed)s result \(result)"
+            )
+        }
+        do {
+            let started = Date()
+            let result = await MultiplexerProbe.runTmuxClients(socket: "/unused", sessionTarget: "0", timeout: 2, executable: lateEOFScript)
+            let elapsed = Date().timeIntervalSince(started)
+            check(
+                "delayed EOF from a grandchild is bounded past the child exit",
+                result.exitStatus == 0 && result.stdout == "ok\n" && elapsed < 1.2,
+                "elapsed \(elapsed)s result \(result)"
+            )
+        }
+        do {
+            let result = await MultiplexerProbe.runTmuxClients(socket: "/unused", sessionTarget: "0", timeout: 2, executable: invalidUTF8Script)
+            check(
+                "exit 0 with invalid UTF-8 stdout is no signal, never detached",
+                result.exitStatus == 0 && result.stdout == nil
+                    && MultiplexerProbe.parseTmuxClients(exitStatus: result.exitStatus, stdout: result.stdout) == .noSignal,
+                "\(result)"
+            )
+            check(
+                "client_attached parse also treats undecodable output as no signal",
+                MultiplexerProbe.parseClientAttached(exitStatus: 0, stdout: nil) == .noSignal
+            )
+        }
+        do {
             let result = await MultiplexerProbe.runTmuxClients(socket: "/unused", sessionTarget: "0", timeout: 2, executable: "/nonexistent/executable")
-            check("launch failure is no signal", result.exitStatus == nil && result.stdout.isEmpty)
+            check("launch failure is no signal with zero bytes", result.exitStatus == nil && result.stdout == "")
+        }
+
+        // MARK: Live engine latency (finding 8: discovery off the main
+        // actor, publication of completed evidence only, cancel on finish)
+
+        for outcome in await engineLatencyChecks() {
+            check(outcome.0, outcome.1, outcome.2)
         }
 
         printSummary(pass: &pass, fail: &fail)
+    }
+
+    /// Latency and lifecycle checks against LiveAttentionEngine with slow
+    /// injected walk readers. The evaluation surface must never wait on
+    // discovery: readSnapshot returns pending immediately while the walk
+    /// is still running, publishes only when it completes, and cancel()
+    /// stops publication outright.
+    @MainActor
+    private static func engineLatencyChecks() async -> [(String, Bool, String)] {
+        var results: [(String, Bool, String)] = []
+        func note(_ name: String, _ ok: Bool, _ detail: String = "") {
+            results.append((name, ok, detail))
+        }
+        let realPID = ProcessInfo.processInfo.processIdentifier
+        let hopDelay: TimeInterval = 0.3
+        let chain: [Int32: AttentionProbe.ProcessRecord] = [
+            realPID: .init(pid: realPID, ppid: 99001, ttyDevice: 0),
+            99001: .init(pid: 99001, ppid: 99002, ttyDevice: 0),
+            99002: .init(pid: 99002, ppid: 1, ttyDevice: 0),
+        ]
+        let slowReaders = AttentionProbe.WalkReaders(
+            process: { pid in
+                Thread.sleep(forTimeInterval: hopDelay)
+                return chain[pid]
+            },
+            application: { pid in
+                pid == 99002 ? AttentionProbe.RunningAppRecord(exists: true, policy: 0) : RunningAppRecord(exists: false, policy: -1)
+            },
+            fullWindows: {
+                [AttentionProbe.WindowRecord(ownerPID: 99002, layer: 0, bounds: CGRect(x: 0, y: 0, width: 800, height: 600), windowNumber: 77)]
+            }
+        )
+        let engine = LiveAttentionEngine(environment: [:], tmuxExecutable: nil, readers: slowReaders)
+        engine.beginDiscovery()
+        // 0.9s+ of sysctl-walk delay: three hops at 0.3s each.
+        do {
+            let started = Date()
+            let snapshot = engine.readSnapshot(now: 0)
+            let elapsed = Date().timeIntervalSince(started)
+            note(
+                "readSnapshot never blocks behind slow discovery",
+                snapshot.hosting == .pending && elapsed < 0.05,
+                "elapsed \(elapsed)s hosting \(snapshot.hosting)"
+            )
+        }
+        do {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            let snapshot = engine.readSnapshot(now: 0.4)
+            note(
+                "unfinished discovery surfaces as pending, not stale identity",
+                snapshot.hosting == .pending,
+                "\(snapshot.hosting)"
+            )
+        }
+        do {
+            var hosting: HostingReading = .pending
+            var visibility: VisibilityReading = .noSignal
+            let deadline = Date().addingTimeInterval(6)
+            while Date() < deadline {
+                engine.refreshTransient()
+                let snapshot = engine.readSnapshot(now: 1)
+                hosting = snapshot.hosting
+                visibility = snapshot.visibility
+                if case .pending = hosting {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    continue
+                }
+                break
+            }
+            // ~0.9s of injected walk delay: three hops at 0.3s. Publication
+            // carries the completed walk (identified) and a completed
+            // visibility count; the count's value follows the real on-screen
+            // inventory for the synthetic pid, so only its case is asserted.
+            var identified = false
+            if case let .identified(pids) = hosting, pids.contains(99002) { identified = true }
+            var counted = false
+            if case .count = visibility { counted = true }
+            note(
+                "completed discovery publishes identified hosting with a completed count",
+                identified && counted,
+                "hosting \(hosting) visibility \(visibility)"
+            )
+        }
+        do {
+            let cancelled = LiveAttentionEngine(environment: [:], tmuxExecutable: nil, readers: slowReaders)
+            cancelled.beginDiscovery()
+            cancelled.cancel()
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            let hosting = cancelled.readSnapshot(now: 0).hosting
+            note(
+                "cancel stops discovery publication",
+                hosting == .pending,
+                "\(hosting)"
+            )
+        }
+        return results
     }
 
     private static func printSummary(pass: inout Int, fail: inout Int) {

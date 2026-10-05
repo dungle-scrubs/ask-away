@@ -50,7 +50,11 @@ enum MultiplexerProbe {
     struct SubprocessResult: Sendable {
         /// nil when the launch failed or the timeout killed the child.
         let exitStatus: Int32?
-        let stdout: String
+        /// nil when the bytes were not valid UTF-8: a decode failure is no
+        /// signal, never an empty string that would parse as detached
+        /// (review finding 6). Nonempty malformed-but-decodable output is
+        /// still no signal at the parse layer.
+        let stdout: String?
     }
 
     /// Resolve the tmux executable without a shell: PATH entries plus the
@@ -105,9 +109,20 @@ enum MultiplexerProbe {
 
     /// One owned child run: drains stdout through a readability handler
     /// (never a blocking read on a cooperative thread), reaps through the
-    /// termination handler, and enforces the timeout by terminating only
-    /// this owned child. First completer wins; later callbacks are no-ops.
+    /// termination handler, and enforces the timeout by completing as no
+    /// signal IMMEDIATELY when the budget expires, then terminating only
+    /// this owned child (TERM, KILL after a grace period). A child that
+    /// ignores SIGTERM, or an inherited pipe held open past the child's
+    /// exit, cannot keep the await pending past its budget (review
+    /// finding 7). First completer wins; later callbacks are no-ops.
     private final class SubprocessRunner: @unchecked Sendable {
+        /// TERM-to-KILL grace for the owned child after a timeout.
+        private static let killGraceSeconds: TimeInterval = 0.5
+        /// Bounded drain window after the child exits: if EOF has not
+        /// arrived by then (a grandchild holds the write end), the result
+        /// is whatever was drained.
+        private static let drainDeadlineSeconds: TimeInterval = 0.25
+
         private let process: Process
         private let pipe: Pipe
         private let lock = NSLock()
@@ -115,9 +130,9 @@ enum MultiplexerProbe {
         private var drained = false
         private var terminated = false
         private var completed = false
-        private var timedOutByBudget = false
         private var continuation: CheckedContinuation<SubprocessResult, Never>?
         private var timeoutWork: DispatchWorkItem?
+        private var drainDeadlineWork: DispatchWorkItem?
 
         init(process: Process, pipe: Pipe) {
             self.process = process
@@ -146,31 +161,15 @@ enum MultiplexerProbe {
 
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
-                if !self.isDone, self.process.isRunning {
-                    // Only the owned child is terminated; the completion
-                    // carries no exit status (no signal, never detached).
-                    self.markTimedOut()
-                    self.process.terminate()
-                }
+                self.completeAsNoSignal()
             }
             timeoutWork = work
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: work)
         }
 
-        private var isDone: Bool {
-            lock.lock(); defer { lock.unlock() }
-            return completed
-        }
-
         private func append(_ data: Data) {
             lock.lock()
             stdoutData.append(data)
-            lock.unlock()
-        }
-
-        private func markTimedOut() {
-            lock.lock()
-            timedOutByBudget = true
             lock.unlock()
         }
 
@@ -185,9 +184,52 @@ enum MultiplexerProbe {
         private func markTerminated() {
             lock.lock()
             terminated = true
-            let ready = drained && terminated && !completed
+            let ready = drained && !completed
+            let needsDrainDeadline = !drained && !completed
             lock.unlock()
-            if ready { complete() }
+            if ready {
+                complete()
+            } else if needsDrainDeadline {
+                // The child exited but EOF has not arrived: an inherited
+                // write descriptor (a grandchild) can hold the pipe open
+                // indefinitely. Bound the drain instead of waiting.
+                let work = DispatchWorkItem { [weak self] in self?.complete() }
+                lock.lock()
+                drainDeadlineWork = work
+                lock.unlock()
+                DispatchQueue.global().asyncAfter(
+                    deadline: .now() + Self.drainDeadlineSeconds,
+                    execute: work
+                )
+            }
+        }
+
+        /// The budget expired: complete the evidence request as no signal
+        /// NOW, within the budget, then tear down the owned child. The
+        /// continuation is released before any teardown so a stubborn
+        /// child cannot stall the caller.
+        private func completeAsNoSignal() {
+            lock.lock()
+            guard !completed else { lock.unlock(); return }
+            completed = true
+            pipe.fileHandleForReading.readabilityHandler = nil
+            timeoutWork?.cancel()
+            timeoutWork = nil
+            drainDeadlineWork?.cancel()
+            drainDeadlineWork = nil
+            let continuation = self.continuation
+            self.continuation = nil
+            lock.unlock()
+            let child = process
+            if child.isRunning {
+                child.terminate()
+                DispatchQueue.global().asyncAfter(deadline: .now() + Self.killGraceSeconds) {
+                    if child.isRunning {
+                        kill(child.processIdentifier, SIGKILL)
+                    }
+                }
+            }
+            continuation?.resume(returning: SubprocessResult(exitStatus: nil, stdout: nil))
         }
 
         private func complete() {
@@ -197,8 +239,10 @@ enum MultiplexerProbe {
             pipe.fileHandleForReading.readabilityHandler = nil
             timeoutWork?.cancel()
             timeoutWork = nil
-            let status = (process.isRunning || timedOutByBudget) ? nil : process.terminationStatus
-            let text = String(data: stdoutData, encoding: .utf8) ?? ""
+            drainDeadlineWork?.cancel()
+            drainDeadlineWork = nil
+            let status = process.isRunning ? nil : process.terminationStatus
+            let text = String(data: stdoutData, encoding: .utf8)
             let continuation = self.continuation
             self.continuation = nil
             lock.unlock()
@@ -210,11 +254,12 @@ enum MultiplexerProbe {
 
     /// Exit-qualified `list-clients` parse:
     /// exit 0 + empty stdout = detached; exit 0 + valid client lines =
-    /// attached (tty list extracted); nonzero, launch failure, timeout, or
-    /// nonempty malformed output = no signal.
-    static func parseTmuxClients(exitStatus: Int32?, stdout: String) -> AttachmentReading {
+    /// attached (tty list extracted); nonzero, launch failure, timeout,
+    /// undecodable output, or nonempty malformed output = no signal.
+    static func parseTmuxClients(exitStatus: Int32?, stdout: String?) -> AttachmentReading {
         guard let status = exitStatus, status == 0 else { return .noSignal }
-        let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let output = stdout else { return .noSignal }
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return .detached }
         var ttys: [String] = []
         for line in trimmed.split(separator: "\n") {
@@ -241,9 +286,10 @@ enum MultiplexerProbe {
     /// malformed output, and unqualified emptiness mean no signal. Never
     /// `output != "1"` as absence (tmux prints an empty value for a detached
     /// pane, never 0). Not the primary detector.
-    static func parseClientAttached(exitStatus: Int32?, stdout: String) -> AttachmentReading {
+    static func parseClientAttached(exitStatus: Int32?, stdout: String?) -> AttachmentReading {
         guard let status = exitStatus, status == 0 else { return .noSignal }
-        let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let output = stdout else { return .noSignal }
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return .detached }
         guard let value = Int(trimmed), value > 0 else { return .noSignal }
         return .attached(ttys: [])

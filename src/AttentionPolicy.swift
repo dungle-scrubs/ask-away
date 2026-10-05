@@ -369,4 +369,13 @@ protocol AttentionProbeSource: AnyObject {
     /// asynchronously. Called once per tick; at most one subprocess may be
     /// in flight per invocation.
     func refreshTransient()
+
+    /// Cancel outstanding discovery and probe tasks; called on finish so
+    /// nothing publishes after the invocation ends. Default: nothing to
+    /// cancel.
+    func cancel()
+}
+
+extension AttentionProbeSource {
+    func cancel() {}
 }

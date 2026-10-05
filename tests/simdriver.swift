@@ -92,6 +92,17 @@ private enum Simulator {
                 clock: .live,
                 trace: { line in writer.append(line) }
             )
+        } else if let liveTracePath = ProcessInfo.processInfo.environment["ASKAWAY_ATTENTION_LIVE_TRACE"] {
+            // Real live engine with observed effects and a trace: the
+            // harness records actual host resolution, states, and effects
+            // without performing real activation.
+            let writer = TraceWriter(path: liveTracePath)
+            dependencies = AttentionDependencies(
+                probe: LiveAttentionEngine(),
+                effects: RecordingAttentionEffects(trace: { line in writer.append(line) }),
+                clock: .live,
+                trace: { line in writer.append(line) }
+            )
         }
 
         let scheduled = scheduledActions()
@@ -402,6 +413,34 @@ private enum Simulator {
 
     /// Write the live field/keyboard state to a file for suite assertions:
     /// first responder kind, field focus, live field value, editor presence.
+    /// The answer field's center and a quiet panel-background point, in
+    /// screen coordinates, for HID click tests.
+    private static func writeFieldRect(to path: String) {
+        guard
+            let panel = currentPanel(),
+            let root = panel.contentView as? PanelRootView,
+            let field = root.answerField
+        else {
+            try? "{\"error\":\"no panel\"}".write(toFile: path, atomically: true, encoding: .utf8)
+            return
+        }
+        let center = field.convert(CGPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil)
+        let screen = panel.convertToScreen(NSRect(origin: center, size: .zero)).origin
+        let quietLocal = CGPoint(x: Theme.windowMargin + 10, y: root.bounds.height / 2)
+        let quiet = panel.convertToScreen(NSRect(origin: quietLocal, size: .zero)).origin
+        let payload: [String: Any] = [
+            "fieldCenterX": screen.x,
+            "fieldCenterY": screen.y,
+            "quietX": quiet.x,
+            "quietY": quiet.y,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: payload),
+           let text = String(data: data, encoding: .utf8)
+        {
+            try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        }
+    }
+
     private static func writeProbe(to path: String) {
         guard let panel = currentPanel(), let root = panel.contentView as? PanelRootView else {
             try? "{\"error\":\"no panel\"}".write(toFile: path, atomically: true, encoding: .utf8)
@@ -411,6 +450,7 @@ private enum Simulator {
         let responderTitle = (panel.firstResponder as? NSButton)?.title ?? ""
         let field = root.answerField
         let payload: [String: Any] = [
+            "isKeyWindow": panel.isKeyWindow,
             "firstResponder": responder,
             "responderTitle": responderTitle,
             "fieldFocused": field?.isFocused(in: panel) ?? false,
@@ -497,6 +537,24 @@ private enum Simulator {
                let editor = root.answerField?.textField.currentEditor() as? NSTextView {
                 editor.paste(nil)
             }
+        case _ where action.hasPrefix("select:"):
+            // Set the live editor's selection: "select:1-3" selects the
+            // substring [1,3); "select:2-2" places the caret at index 2.
+            // Drives the paste-position cases through the real editor.
+            let parts = String(action.dropFirst("select:".count)).split(separator: "-")
+            guard parts.count == 2, let start = Int(parts[0]), let end = Int(parts[1]), start <= end else {
+                FileHandle.standardError.write(Data("simdriver: bad select range\n".utf8))
+                exit(1)
+            }
+            if let root = currentPanel()?.contentView as? PanelRootView,
+               let editor = root.answerField?.textField.currentEditor() as? NSTextView {
+                editor.selectedRange = NSRange(location: start, length: end - start)
+            }
+        case _ where action.hasPrefix("fieldrect:"):
+            // The answer field's center in screen coordinates plus a quiet
+            // background point, for HID-driven click tests: the shell
+            // drives real CGEventPost input at these coordinates.
+            writeFieldRect(to: String(action.dropFirst("fieldrect:".count)))
         case "modkeyc":
             postKey(8, characters: "c", modifiers: .command)
         case "modkeyo":

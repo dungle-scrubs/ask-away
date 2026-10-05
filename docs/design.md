@@ -47,13 +47,16 @@ identity must never depend on what the user had open, so appearance is locked
 |  wraps, block markup (§11)                       |  10pt above, 18pt below
 |  42s         [ ghost ] [ ghost ] [ FILLED ]      |  row right-aligned
 | [ Type your own answer - Return sends it      ]  |  answer field, full width (§13)
+| 42s (countdown band y 4-18; field base y 26)      |  §6, §13 amendment
 | ▓▓▓▓▓▓▓▓▓▓▓▓▓▓__________ drain line (2pt)        |
 |                              (bottom-right cut)  |
 +--------------------------------------------------+
 ```
 
-- Base grid: 4pt. Horizontal padding 20pt. Top padding 18pt. Bottom padding
-  20pt (measured to the drain line, not the panel edge).
+- Base grid: 4pt. Horizontal padding 20pt. Top padding 18pt. Bottom band
+  (amended in the v0.3.0 fix round, §13): drain line y 0-2, countdown host
+  y 4-18, 8pt gap, content stacks from y 26 - the flat 20pt bottom padding
+  is retired.
 - Metadata row: title left, step indicator `k/n` right in a sequence (§12),
   baseline-aligned, one line, tail-truncated with ellipsis. Reserve space
   at the top right for the Close control: subtract an additional **32pt**
@@ -66,9 +69,9 @@ identity must never depend on what the user had open, so appearance is locked
 - Button row: right-aligned, 8pt gaps between buttons.
 - Answer field (§13): one single-line text input on **every** panel, single
   question and batch step alike, under the button row. Full inner width,
-  **28pt** tall, the buttons' 7pt chamfers; **8pt** below the button row, and
-  the §1 bottom padding leaves **20pt** between the field and the drain
-  line. §13 owns the full contract.
+  **28pt** tall, the buttons' 7pt chamfers; **8pt** below the button row,
+  base at **y 26** above the countdown band (v0.3.0 fix-round amendment;
+  the flat 20pt bottom padding is retired). §13 owns the full contract.
 - Drain line: 2pt, along the bottom edge, full inner width (see §6).
 
 **Sizing** (amended by §11-§13). Width is fixed per invocation: default
@@ -81,10 +84,11 @@ height instead, capped at the body maximum, then scrolls internally -
 tail-truncation with ellipsis is retired. 1-2 sentence bodies land at 420pt.
 Body maximum: **36% of the target screen's `visibleFrame.height`**, measured
 at show time. Height is intrinsic: 18 + 14 (metadata) + 10 + body + 18 +
-30 (buttons) + 8 + 28 (answer field, §13) + 20, i.e. roughly **184-268pt**;
+30 (buttons) + 8 + 28 (answer field, §13) + 8 + 14 + 4 (countdown band,
+§13 amendment), i.e. roughly **190-274pt**;
 a wrapped second button row (§12) adds 38pt. Panel hard cap: **52% of the
-target screen's `visibleFrame.height`**. Fixed chrome is **146pt** (one
-button row) to **184pt** (wrapped); when 36% + chrome would exceed the cap
+target screen's `visibleFrame.height`**. Fixed chrome is **152pt** (one
+button row) to **190pt** (wrapped); when 36% + chrome would exceed the cap
 (visible frames under ~1150pt with a wrapped row), the panel cap is the
 binding constraint and the body region shrinks to the remainder and scrolls
 - the body region is the only elastic element; nothing ever truncates with
@@ -774,9 +778,14 @@ answers the button set cannot express. No new flags, no new exit codes.
 
 **Geometry.** Height **28pt**, full inner width (panel width minus 40pt),
 the buttons' **7pt** top-left/bottom-right chamfer cuts (§4). It sits
-**8pt** below the button row; the §1 bottom padding leaves **20pt** between
-the field and the drain line. §1's diagram and height formula include it;
-the §12 fixed frame is computed from the same formula.
+**8pt** below the button row. **Amended in the v0.3.0 fix round:** the
+lower-left countdown owns its own band - the drain line occupies y 0-2,
+the §6 countdown host y 4-18 (14pt), then an **8pt gap**, so the field's
+base sits at **y 26** from the panel's bottom edge. The retired flat
+"20pt bottom padding" placed the field's lower hairline 2pt from the
+countdown text (owner-reported collision); the band arithmetic replaces
+it. §1's height formula gains 6pt; the §12 fixed frame is computed from
+the same formula.
 
 **Typography.** Text and placeholder in SF Pro Text 13pt / 400 / 17pt line
 height / -0.1pt tracking (§3) - the body family, never mono: typed prose is
@@ -1156,4 +1165,7 @@ D28-D30, signal probes in `.scratch/ask-away-attention/` (git-ignored). The
 §14 hosting-visibility rewrite was authored 2026-10-04 by design-agent after
 the owner redirected the trigger from frontmost focus to window visibility;
 machine-made calls in ledger rows D31-D34, live probes in
-`.scratch/ask-away-visibility/` (git-ignored).
+`.scratch/ask-away-visibility/` (git-ignored). The §13 countdown-band
+geometry amendment (field base y 26, chrome 152/190) was authored in the
+v0.3.0 fix round against an owner-reported field/countdown collision;
+machine-made call in ledger row D35.

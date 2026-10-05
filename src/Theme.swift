@@ -78,7 +78,15 @@ enum Theme {
     /// The field block below the button row: the field plus its gap.
     static let fieldBlockHeight: CGFloat = answerFieldHeight + buttonToFieldGap
     static let answerFieldPlaceholder = "Type your own answer - Return sends it"
-    static let bottomPadding: CGFloat = 20
+    /// The countdown band (section 6): the seconds host sits at y=4 with
+    /// the 14pt metadata height, so it occupies y 4..18. The field must
+    /// clear it, not overlap it: the field base rises above the countdown
+    /// band plus an 8pt gap (amended section 13 geometry; the old flat
+    /// 20pt bottom padding is retired).
+    static let countdownY: CGFloat = 4
+    static let fieldToCountdownGap: CGFloat = 8
+    /// Everything above the drain line stacks from here: 4 + 14 + 8 = 26.
+    static let contentBaseY: CGFloat = countdownY + metadataHeight + fieldToCountdownGap
     static let buttonGap: CGFloat = 8
     static let buttonMinWidth: CGFloat = 64
     static let buttonHPadding: CGFloat = 16
@@ -147,11 +155,12 @@ enum Theme {
     /// CubicBezier(0.2, 0.8, 0.2, 1), the entrance and exit curve.
     static let mainCurve = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)
 
-    /// Fixed chrome height under sections 1 and 13: 18 top + 14 metadata +
-    /// 10 + 18 body gap + 30 button row + 8 field gap + 28 field + 20
-    /// bottom = 146. A wrapped second button row adds 38pt (184).
+    /// Fixed chrome height under sections 1, 6, and 13: 18 top + 14
+    /// metadata + 10 + 18 body gap + 30 button row + 8 field gap + 28 field
+    /// + 8 field-to-countdown gap + 14 countdown + 4 countdown base = 152.
+    /// A wrapped second button row adds 38pt (190).
     static func chromeHeight(wrappedRows: Bool) -> CGFloat {
-        110 + fieldBlockHeight + (wrappedRows ? wrappedRowExtra : 0)
+        116 + fieldBlockHeight + (wrappedRows ? wrappedRowExtra : 0)
     }
 
     // MARK: Countdown ramp (section 2)

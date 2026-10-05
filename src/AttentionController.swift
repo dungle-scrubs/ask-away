@@ -16,202 +16,257 @@ struct AttentionDependencies {
 
 /// The live evidence engine: caches the invocation's direct ancestry walk,
 /// refreshes visibility and multiplexer attachment per tick, and keeps at
-/// most one tmux subprocess in flight. All state is main-actor; the only
-/// off-main work is the bounded subprocess itself.
+/// most one tmux subprocess in flight. Discovery and inventory reads run
+/// OFF the main actor and publish completed evidence; `readSnapshot`
+/// returns only what has already been published, so an evaluation never
+/// waits on - and the main actor never stalls behind - a slow walk,
+/// process snapshot, window inventory, or subprocess (review finding 8).
+/// Unfinished work surfaces as pending/no-signal readings, which the
+/// reducer evaluates as UNKNOWN: the safe direction that never escalates.
 @MainActor
 final class LiveAttentionEngine: AttentionProbeSource {
 
     private let environment: [String: String]
     private let tmuxExecutable: String?
+    private let readers: AttentionProbe.WalkReaders
     private let ownPID = ProcessInfo.processInfo.processIdentifier
     private let context: MultiplexerProbe.Context
 
+    // Published evidence (main actor).
+    private var discoveryStarted = false
     private var discoveryDone = false
     private var directHost: Int32?
     private var attachment: AttachmentReading = .noSignal
-    private var attachmentInFlight = false
     /// Attached-client tty list of the last completed probe: the cache key
     /// for resolved client ancestries. A changed list invalidates them.
     private var attachedTTYs: [String] = []
     private var clientHosts: [Int32] = []
     private var clientResolutionPending = false
+    private var hostingReading: HostingReading = .pending
+    private var visibilityReading: VisibilityReading = .noSignal
+    /// Bumped whenever published identity state becomes stale; evidence
+    /// publishes only when its captured generation still matches.
+    private var evidenceGeneration = 0
+
+    // Retained engine tasks, cancelled on finish.
+    private var discoveryTask: Task<Void, Never>?
+    private var attachmentTask: Task<Void, Never>?
+    private var evidenceTask: Task<Void, Never>?
+    private var resolveTask: Task<Void, Never>?
+    /// The tty membership the current client-host cache was resolved
+    /// against: unchanged membership reuses the cache (review finding 8).
+    private var lastResolvedTTYs: [String]?
 
     /// Production engine: multiplexer context from this process's own
-    /// environment, tmux resolved from PATH.
+    /// environment, tmux resolved from PATH, live probe readers.
     convenience init() {
         self.init(environment: MultiplexerProbe.currentEnvironment(), tmuxExecutable: nil)
     }
 
-    init(environment: [String: String], tmuxExecutable: String?) {
+    init(
+        environment: [String: String],
+        tmuxExecutable: String?,
+        readers: AttentionProbe.WalkReaders = AttentionProbe.liveReaders
+    ) {
         self.environment = environment
         self.tmuxExecutable = tmuxExecutable
+        self.readers = readers
         self.context = MultiplexerProbe.parseMultiplexerContext(environment: environment)
     }
 
     // MARK: Discovery
 
     func beginDiscovery() {
-        guard !discoveryDone, !discoveryStarted else { return }
+        guard !discoveryStarted else { return }
         discoveryStarted = true
-        // The walk is a handful of sysctls and one window-list read - a few
-        // milliseconds at most - dispatched after the panel is already on
-        // screen so appearance is never delayed.
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.directHost = AttentionProbe.walkGUIHost(startPID: self.ownPID, readers: AttentionProbe.liveReaders)
-            self.discoveryDone = true
-            // Attachment is probed whenever TMUX is set, even when the
-            // direct walk found a host: detached precedence must hold.
-            if case .tmux = self.context {
-                self.refreshTransient()
+        // The walk is a handful of sysctls and one window-list read. It
+        // runs detached from the main actor so panel appearance, the first
+        // beep, UI processing, and deadline handling never queue behind it.
+        let readers = self.readers
+        let startPID = ownPID
+        discoveryTask = Task.detached(priority: .utility) { [weak self] in
+            let host = AttentionProbe.walkGUIHost(startPID: startPID, readers: readers)
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                self.directHost = host
+                self.discoveryDone = true
+                // Attachment is probed whenever TMUX is set, even when the
+                // direct walk found a host: detached precedence must hold.
+                if case .tmux = self.context {
+                    self.refreshTransient()
+                }
             }
         }
     }
 
-    private var discoveryStarted = false
-
     // MARK: Snapshot
 
+    /// Compose the published evidence. Unpublished discovery is `.pending`;
+    /// an in-flight inventory keeps the previous reading. Hard absence is
+    /// the one synchronous read left here: it is two cheap main-thread
+    /// queries (CGDisplayIsAsleep plus a running-apps scan).
     func readSnapshot(now: Double) -> AttentionSnapshot {
-        let hard = AttentionProbe.readHardAbsence()
-        var hosting: HostingReading = .pending
-        var visibility: VisibilityReading = .noSignal
-        if discoveryDone {
-            var hosts: [Int32] = []
-            if let directHost {
-                hosts = [directHost]
-            } else {
-                hosts = clientHosts
-            }
-            if hosts.isEmpty {
-                // An attached-but-unresolved client set stays pending while
-                // resolution runs; once every probe has answered, it is
-                // unidentified (UNKNOWN, never escalation).
-                hosting = clientResolutionPending ? .pending : .unidentified
-            } else {
-                let owners = AttentionProbe.hostingOwnerPIDs(hosts: hosts, snapshot: AttentionProbe.readAllProcesses(), ownPID: ownPID)
-                if let owners, !owners.isEmpty {
-                    hosting = .identified(hostPIDs: owners)
-                    visibility = AttentionProbe.readHostingVisibility(ownerPIDs: owners)
-                } else {
-                    hosting = .unidentified
-                }
-            }
-        }
-        return AttentionSnapshot(
+        AttentionSnapshot(
             now: now,
-            hosting: hosting,
-            visibility: visibility,
+            hosting: hostingReading,
+            visibility: visibilityReading,
             attachment: attachment,
-            hardAbsence: hard
+            hardAbsence: AttentionProbe.readHardAbsence()
         )
     }
 
     // MARK: Transient refresh
 
     func refreshTransient() {
+        refreshAttachment()
+        refreshHostingEvidence()
+    }
+
+    private func refreshAttachment() {
         guard case let .tmux(socket, session) = context else { return }
-        guard !attachmentInFlight else { return }
-        attachmentInFlight = true
+        guard attachmentTask == nil else { return }
         let executable = tmuxExecutable
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        attachmentTask = Task { [weak self] in
             let result = await MultiplexerProbe.runTmuxClients(
                 socket: socket,
                 sessionTarget: session,
                 executable: executable
             )
             guard !Task.isCancelled else { return }
-            self.attachmentInFlight = false
-            let reading = MultiplexerProbe.parseTmuxClients(exitStatus: result.exitStatus, stdout: result.stdout)
-            self.attachment = reading
-            switch reading {
-            case let .attached(ttys):
-                if ttys != self.attachedTTYs {
-                    self.attachedTTYs = ttys
-                    self.invalidateClientMembership()
-                }
-                // Resolve client hosts only when the direct walk found no
-                // host of its own.
-                if self.directHost == nil, !ttys.isEmpty, self.discoveryDone {
-                    self.resolveClients(ttys: ttys)
-                } else if self.directHost == nil, self.discoveryDone {
-                    self.clientResolutionPending = false
-                }
-            case .detached, .noSignal:
-                // No usable client identity; membership from an earlier
-                // probe must not linger.
-                if !self.attachedTTYs.isEmpty {
-                    self.attachedTTYs = []
-                    self.invalidateClientMembership()
-                }
-                if self.directHost == nil {
-                    self.clientResolutionPending = false
+            self?.publishAttachment(result)
+        }
+    }
+
+    private func publishAttachment(_ result: MultiplexerProbe.SubprocessResult) {
+        attachmentTask = nil
+        let reading = MultiplexerProbe.parseTmuxClients(exitStatus: result.exitStatus, stdout: result.stdout)
+        attachment = reading
+        switch reading {
+        case let .attached(ttys):
+            if ttys != attachedTTYs {
+                attachedTTYs = ttys
+                invalidateClientMembership()
+            }
+            // Resolve client hosts only when the direct walk found no
+            // host of its own, and only when membership changed.
+            if directHost == nil, discoveryDone, !ttys.isEmpty {
+                resolveClients(ttys: ttys)
+            } else if directHost == nil {
+                clientResolutionPending = false
+            }
+        case .detached, .noSignal:
+            // No usable client identity; membership from an earlier probe
+            // must not linger.
+            if !attachedTTYs.isEmpty {
+                attachedTTYs = []
+                invalidateClientMembership()
+            }
+            if directHost == nil {
+                clientResolutionPending = false
+            }
+        }
+    }
+
+    /// Hosting identity plus visibility evidence, computed off the main
+    /// actor from the identity state captured at generation `generation`
+    /// and published only if that generation is still current.
+    private func refreshHostingEvidence() {
+        guard discoveryDone else { return }
+        guard evidenceTask == nil else { return }
+        let hosts: [Int32]
+        if let directHost {
+            hosts = [directHost]
+        } else {
+            hosts = clientHosts
+        }
+        if hosts.isEmpty {
+            // Pure identity state, main-actor truth: an attached but
+            // unresolved client set stays pending while resolution runs;
+            // once every probe has answered it is unidentified (UNKNOWN,
+            // never escalation).
+            hostingReading = clientResolutionPending ? .pending : .unidentified
+            visibilityReading = .noSignal
+            return
+        }
+        let generation = evidenceGeneration
+        let ownPID = self.ownPID
+        evidenceTask = Task.detached(priority: .utility) { [weak self] in
+            let snapshot = AttentionProbe.readAllProcesses()
+            let owners = snapshot.flatMap { AttentionProbe.hostingOwnerPIDs(hosts: hosts, snapshot: $0, ownPID: ownPID) }
+            let identified = owners != nil && !owners!.isEmpty
+            let visibility = identified
+                ? AttentionProbe.readHostingVisibility(ownerPIDs: owners)
+                : .noSignal
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                self.evidenceTask = nil
+                guard self.evidenceGeneration == generation else { return }
+                if let owners, !owners.isEmpty {
+                    self.hostingReading = .identified(hostPIDs: owners)
+                    self.visibilityReading = visibility
+                } else {
+                    self.hostingReading = .unidentified
+                    self.visibilityReading = .noSignal
                 }
             }
         }
     }
 
     /// Client-tty resolution: the client processes owning each attached
-    /// tty, then the same structural walk from each, cached by identity.
+    /// tty, then the same structural walk from each. Cached by tty
+    /// membership: an unchanged attached list reuses the resolved hosts
+    /// instead of re-walking every tick (review finding 8).
     private func resolveClients(ttys: [String]) {
+        guard ttys != lastResolvedTTYs else { return }
+        lastResolvedTTYs = ttys
         clientResolutionPending = true
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        let readers = self.readers
+        resolveTask?.cancel()
+        resolveTask = Task.detached(priority: .utility) { [weak self] in
             let snapshot = AttentionProbe.readAllProcesses()
             let pids = MultiplexerProbe.clientPIDs(forTTYs: ttys, snapshot: snapshot)
-            let hosts = pids.isEmpty ? [] : AttentionProbe.resolveClientHosts(clientPIDs: pids, readers: AttentionProbe.liveReaders)
-            // Apply only if the membership is still current.
-            if self.attachedTTYs == ttys {
+            let hosts = pids.isEmpty ? [] : AttentionProbe.resolveClientHosts(clientPIDs: pids, readers: readers)
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                // Apply only if the membership is still current.
+                guard self.attachedTTYs == ttys else { return }
                 self.clientHosts = hosts
                 self.clientResolutionPending = false
+                self.refreshHostingEvidence()
             }
         }
     }
 
     private func invalidateClientMembership() {
+        resolveTask?.cancel()
         clientHosts = []
         clientResolutionPending = false
-    }
-}
-
-/// Production escalation effects against the live panel, in the section 14
-/// order. The activation spelling is the macOS 13 floor-legal one; the
-/// macOS 14 deprecation is expected and must not be upgraded past the
-/// floor.
-@MainActor
-final class PanelAttentionEffects: AttentionEffectsObserver {
-    private weak var panel: AskPanel?
-
-    init(panel: AskPanel) {
-        self.panel = panel
+        lastResolvedTTYs = nil
+        evidenceGeneration += 1
     }
 
-    func activateApplication() {
-        NSApp.activate(ignoringOtherApps: true)
-    }
+    // MARK: Shutdown
 
-    func makeKeyAndOrderFront() {
-        panel?.makeKeyAndOrderFront(nil)
-    }
-
-    func raiseLevelToScreenSaver() {
-        panel?.level = .screenSaver
-    }
-
-    func playEscalationBeep(index: Int) {
-        NSSound.beep()
-    }
-
-    func playAppearBeep() {
-        NSSound.beep()
+    /// Cancel outstanding discovery, subprocess, evidence, and resolution
+    /// tasks. Called when the invocation finishes; late completions are
+    /// ignored, so nothing publishes after finish (review finding 8).
+    func cancel() {
+        discoveryTask?.cancel()
+        discoveryTask = nil
+        attachmentTask?.cancel()
+        attachmentTask = nil
+        evidenceTask?.cancel()
+        evidenceTask = nil
+        resolveTask?.cancel()
+        resolveTask = nil
     }
 }
 
 /// Invocation-level attention lifecycle: first evaluation on the next
 /// main-loop turn, a 1 Hz common-mode timer independent of the drain
 /// display link, exactly-once escalation with latched effects in the
-/// section 14 order, beep scheduling, and cancellation on finish.
+/// section 14 order, beep scheduling, and cancellation on finish. Finishing
+/// also cancels the engine's outstanding discovery and probe tasks.
 @MainActor
 final class AttentionController {
 
@@ -318,8 +373,9 @@ final class AttentionController {
         }
     }
 
-    /// Finish: cancel remaining beeps, the timer, and late callbacks. The
-    /// give-up deadline is untouched by everything here.
+    /// Finish: cancel remaining beeps, the timer, late callbacks, and the
+    /// engine's outstanding discovery/probe tasks. The give-up deadline is
+    /// untouched by everything here.
     func stop() {
         guard !finished else { return }
         finished = true
@@ -329,6 +385,7 @@ final class AttentionController {
             work.cancel()
         }
         pendingBeeps.removeAll()
+        probe.cancel()
         if let trace { trace(Self.line(clock.now(), event: "stop")) }
     }
 
