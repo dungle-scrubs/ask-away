@@ -1,0 +1,35 @@
+{
+  "questions": [
+    {
+      "title": "custom: reviewer",
+      "text": "Type a name or pick a suggestion.",
+      "buttons": [
+        "Alice",
+        "Bob"
+      ],
+      "give_up_after": 30,
+      "no_beep": true
+    },
+    {
+      "title": "custom: risk",
+      "text": "Second step with **markup**, `code`, and four buttons so the row wraps.",
+      "buttons": [
+        "Hold it",
+        "Page on-call",
+        "Ship it to staging immediately",
+        "Yes"
+      ],
+      "default": 4,
+      "give_up_after": 30
+    },
+    {
+      "title": "custom: note",
+      "text": "Quotes \"and\" backslash \\ in the answer get escaped on stdout.",
+      "buttons": [
+        "No note",
+        "Attach"
+      ],
+      "give_up_after": 6
+    }
+  ]
+}

@@ -43,13 +43,17 @@ question. The recommended answer is the dialog's default button.
   recommended one and takes Return unless `--default N` moves it.
 - The dialog carries the question; the agent's reply carries the details.
   When details exist, the dialog text says where to find them.
-- A beep sounds before the dialog unless `--no-beep`.
+- A beep sounds when the dialog appears unless `--no-beep`. With attention
+  on, the beep follows the first attention evaluation (within a second of
+  appearance), and becomes the escalation triple when the human provably
+  cannot see the panel.
 
 ## Reading the answer
 
 | stdout | exit | meaning | then |
 |---|---|---|---|
 | button text | 0 | the human chose | act on it |
+| the typed string | 0 | the human typed a custom answer | act on it - it is an answer like a button |
 | `CANCELED` | 2 | the human declined the framing | stop, or re-ask in prose |
 | `GAVE-UP` | 3 | the bound expired unanswered | rung 3, below |
 | `CLOSED` | 4 | the human dismissed the native panel | re-ask in the session UI |
@@ -57,6 +61,35 @@ question. The recommended answer is the dialog's default button.
 Closing leaves the decision unanswered and supplies no approval. Take no
 default or best-effort recommendation after `CLOSED`; re-ask in the session
 UI. Keep answers already collected in a batch.
+
+## Attention
+
+The native panel escalates when the human provably cannot see the question:
+the GUI application hosting the agent owns no on-screen window (other Space,
+minimized - held for `--absent-after`, default 20s, so Space-switch gestures
+never trip it), the tmux session is detached, or the display is asleep.
+Visible-but-unfocused never escalates: while the question is on screen the
+panel stays quiet. Escalation activates ask-away, pulls the panel above
+everything, and triple-beeps - immediately at launch when the absence is
+already provable (detached client, sleeping display), otherwise once
+"away" holds for `--interrupt-after` seconds (default 0). What an agent can
+rely on:
+
+- A panel left unanswered while the human is provably away - hosting
+  window off screen for `--absent-after` seconds, a detached tmux client,
+  a sleeping display or screensaver - forces itself on them. No
+  re-polling, no re-asking in a loop; ask once and wait on stdout.
+- Ambiguous conditions - SSH, no local GUI ancestor, a multiplexer client
+  that cannot be resolved - read UNKNOWN and never steal focus. If the
+  human is merely away in an unverifiable way, the panel waits out the
+  bound and gives up; escalation only fires on proven absence.
+- `CLOSED` still means what it always meant: the human dismissed the panel
+  deliberately; take it back to chat.
+- `--no-attention` turns detection and escalation off - use it for tests,
+  CI, and any context where focus must not move. Escalation needs the host
+  window provably absent; a window merely hidden behind others does not
+  qualify.
+- The AppleScript fallback has no attention model and ignores the flags.
 
 ## Body text scope (markdown)
 
@@ -95,7 +128,8 @@ printf '%s' "$doc" | <skill-dir>/scripts/ask.sh --questions-file -
   question was answered. Exit codes: 0 all answered, 2 stopped on
   Escape, 3 stopped on a step's bound, 4 stopped on Close, 1 usage or
   validation. Close at step k appends `{"index":k,"status":"closed"}` and
-  sets `stopped_at` to k.
+  sets `stopped_at` to k. An `answer` is the clicked button's text or a
+  string typed into the panel's answer field; the two are shape-identical.
 - Partial answers survive a mid-sequence stop: answers collected before the
   stopped step are in `results`.
 - The upper-right step indicator reads `k/n`; the lower-left countdown
@@ -148,7 +182,10 @@ When no binary is on PATH (next to the script either), `ask.sh` falls back
 to the same flags through AppleScript `display dialog`, which needs no
 install and no extra permission. The single-question flags are the same,
 but closing the AppleScript fallback returns `CANCELED` (exit 2): that
-renderer cannot distinguish close from cancellation. The fallback cannot
+renderer cannot distinguish close from cancellation. The fallback shows
+the same custom-answer field natively (`default answer ""`): a typed
+string is returned as the answer, an empty field falls back to the clicked
+button's text - same stdout contract. The fallback cannot
 walk a questions file (`--questions-file` there exits 1 with a message), and it
 renders plain text only. The native binary is faster to appear and visually
 distinct from a system dialog.

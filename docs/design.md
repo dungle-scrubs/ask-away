@@ -46,13 +46,17 @@ identity must never depend on what the user had open, so appearance is locked
 |  body text, 1-2 sentences,                       |
 |  wraps, block markup (§11)                       |  10pt above, 18pt below
 |  42s         [ ghost ] [ ghost ] [ FILLED ]      |  row right-aligned
+| [ Type your own answer - Return sends it      ]  |  answer field, full width (§13)
+| 42s (countdown band y 4-18; field base y 26)      |  §6, §13 amendment
 | ▓▓▓▓▓▓▓▓▓▓▓▓▓▓__________ drain line (2pt)        |
 |                              (bottom-right cut)  |
 +--------------------------------------------------+
 ```
 
-- Base grid: 4pt. Horizontal padding 20pt. Top padding 18pt. Bottom padding
-  20pt (measured to the drain line, not the panel edge).
+- Base grid: 4pt. Horizontal padding 20pt. Top padding 18pt. Bottom band
+  (amended in the v0.3.0 fix round, §13): drain line y 0-2, countdown host
+  y 4-18, 8pt gap, content stacks from y 26 - the flat 20pt bottom padding
+  is retired.
 - Metadata row: title left, step indicator `k/n` right in a sequence (§12),
   baseline-aligned, one line, tail-truncated with ellipsis. Reserve space
   at the top right for the Close control: subtract an additional **32pt**
@@ -63,9 +67,14 @@ identity must never depend on what the user had open, so appearance is locked
   height caps at **36% of the screen's visible frame height**, beyond which
   the body scrolls internally (no ellipsis).
 - Button row: right-aligned, 8pt gaps between buttons.
+- Answer field (§13): one single-line text input on **every** panel, single
+  question and batch step alike, under the button row. Full inner width,
+  **28pt** tall, the buttons' 7pt chamfers; **8pt** below the button row,
+  base at **y 26** above the countdown band (v0.3.0 fix-round amendment;
+  the flat 20pt bottom padding is retired). §13 owns the full contract.
 - Drain line: 2pt, along the bottom edge, full inner width (see §6).
 
-**Sizing** (amended by §11-§12). Width is fixed per invocation: default
+**Sizing** (amended by §11-§13). Width is fixed per invocation: default
 **420pt**, clamped to [**340pt, 520pt**]. Pick the smallest of
 340 / 420 / 520 at which the body fits in 2 lines (measure the rendered
 block stack at the body style, using **panel width minus 40pt** for both
@@ -75,15 +84,16 @@ height instead, capped at the body maximum, then scrolls internally -
 tail-truncation with ellipsis is retired. 1-2 sentence bodies land at 420pt.
 Body maximum: **36% of the target screen's `visibleFrame.height`**, measured
 at show time. Height is intrinsic: 18 + 14 (metadata) + 10 + body + 18 +
-30 (buttons) + 20, i.e. roughly **148-232pt**; a wrapped second button row
-(§12) adds 38pt. Panel hard cap: **52% of the target screen's
-`visibleFrame.height`**. Fixed chrome is 110pt (one button row) to 148pt
-(wrapped); when 36% + chrome would exceed the cap (visible frames under
-~975pt with a wrapped row), the panel cap is the binding constraint and the
-body region shrinks to the remainder and scrolls - the body region is the
-only elastic element; nothing ever truncates with ellipsis. Example, 900pt
-visible frame: body cap 324pt, panel cap 468pt; a 500pt body renders as a
-324pt scrolling region (panel 434pt).
+30 (buttons) + 8 + 28 (answer field, §13) + 8 + 14 + 4 (countdown band,
+§13 amendment), i.e. roughly **190-274pt**;
+a wrapped second button row (§12) adds 38pt. Panel hard cap: **52% of the
+target screen's `visibleFrame.height`**. Fixed chrome is **152pt** (one
+button row) to **190pt** (wrapped); when 36% + chrome would exceed the cap
+(visible frames under ~1150pt with a wrapped row), the panel cap is the
+binding constraint and the body region shrinks to the remainder and scrolls
+- the body region is the only elastic element; nothing ever truncates with
+ellipsis. Example, 900pt visible frame: body cap 324pt, panel cap 468pt; a
+500pt body renders as a 322pt scrolling region (panel 468pt).
 
 **Placement.** On the screen containing the pointer
 (`NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }`),
@@ -118,6 +128,17 @@ only adds depth.
 | Default button fill | `accent` | `accent-hover` | `accent-pressed` | `accent 28%` |
 | Default button label | `#062126` | `#062126` | `#062126` | `#669099` |
 | Default button glow | `accent`, r8, 35% | same | same | none |
+| Answer field fill (§13) | `white 2%` | `accent 8%` (focused) | - | - |
+| Answer field hairline (§13) | `white 18%` | `accent 65%` (focused) | - | - |
+| Answer field text | `#F2F7FB` | - | - | - |
+| Answer field placeholder | `#9FB4C1` (§13) | - | - | - |
+| Answer field caret | `accent` | - | - | - |
+| Answer field selection | `accent` @ 35% behind `#F2F7FB` text | - | - | - |
+
+The answer field (§13) has no hover and no pressed state - it is a text
+field, not a button. The Hover column of its rows carries its single
+non-idle state, focus; the idle-to-focused crossfade uses the §7 button
+timing (120ms).
 
 **WCAG contrast**, computed against `#0B0F16` nominal and, in brackets,
 against the worst case (scrim blended over pure white, effective `#23272D`):
@@ -136,6 +157,8 @@ against the worst case (scrim blended over pure white, effective `#23272D`):
 | Secondary `#9FB4C1` on panel (list markers, §11) | **8.9:1** [7.0:1] - AAA |
 | Ramp amber `#FFB020` on panel | **10.5:1** |
 | Ramp red `#FF453A` on panel | **5.6:1** (non-text, needs 3:1) |
+| Answer field placeholder `#9FB4C1` on its `white 2%` fill | **8.6:1** [6.6:1] - AA (hint text; both clear 4.5) |
+| Answer field text on selection `accent` @ 35% | **7.3:1** [5.8:1] - AAA |
 | Disabled labels (2.8:1 / 3.9:1) | exempt - WCAG 1.4.3 excludes inactive controls |
 
 Countdown hue ramp (drain line and the seconds text share one color):
@@ -165,6 +188,7 @@ time is running out.
 | Step indicator (§12) | SF Mono, metadata style | 11pt | 500 | 14pt | +0.3pt, tabular |
 | Button label (ghost) | SF Pro Text | 13pt | 500 | - | +0.1pt |
 | Button label (default) | SF Pro Text | 13pt | 600 | - | +0.1pt |
+| Answer field text + placeholder (§13) | SF Pro Text | 13pt | 400 | 17pt | -0.1pt |
 
 Mono is used only where it means code or measurement (metadata, countdown,
 code, step indicator) - never as decoration. Never uppercase agent-supplied
@@ -180,7 +204,8 @@ constructs degrade to plain text.
   frame motif; all four cuts would eat body measure at the 340pt floor.
 - Buttons: same diagonal orientation, **7pt cuts, top-left and bottom-right**.
   The filled default button keeps the cut - one cut language across the whole
-  panel, no rectangular exceptions.
+  panel, no rectangular exceptions. The answer field (§13) carries the same
+  7pt cuts.
 - Border: **1px** (`lineWidth: 1`, pixel-aligned: offset the path by 0.5pt at
   1x) stroked in `accent` at 100%.
 - Glow: `CALayer.shadowColor = accent`, `shadowRadius = 12`, `shadowOpacity =
@@ -209,8 +234,11 @@ stroke, shadow shape (see §10).
   Return hint. There is no hidden-until-used hint and no NSButton focus ring
   - the dotted ring would fight the neon hairline. Full-keyboard-access users
   get Tab cycling, and a focused (or hovered) ghost button shows the hover
-  treatment (`accent 65%` border). Return triggers the default; Escape sends
-  `CANCELED` (exit 2). No other keys are bound.
+  treatment (`accent 65%` border). Return triggers the default when the
+  answer field (§13) is empty or unfocused; with the field focused and
+  non-empty, Return sends the typed string instead. Escape sends `CANCELED`
+  (exit 2). No other keys are bound; printable characters route to the
+  answer field (§13).
 - Batch mode (§12): up to 4 buttons per question; when the row exceeds the
   inner width it wraps to a second right-aligned row (§12 owns the rule).
 
@@ -248,11 +276,14 @@ stroke, shadow shape (see §10).
   to full width instantly at each step start (no crossfade on the reset);
   steps without a bound hide the line and countdown exactly like a no-bound
   single invocation.
-- **Beep:** audio only, unrelated to the drain line. One `NSSound.beep()` at
-  the moment the panel appears; `--no-beep` suppresses it. The line, ramp,
-  and timing are identical either way. In a sequence (§12) the beep plays
-  once at sequence start, never per step; it is suppressed when any question
-  in the file sets `no_beep`.
+- **Beep (amended §14):** audio only, unrelated to the drain line. With
+  attention on (§14), the beep plays at the first attention evaluation -
+  within **1s** of appear - as a single beep (VISIBLE or UNKNOWN) or the
+  escalation triple (ABSENT); `--no-beep` suppresses every pattern. With
+  `--no-attention`, one `NSSound.beep()` at the moment the panel appears,
+  exactly as v0.2.0. The line, ramp, and timing are identical either way. In
+  a sequence (§12) the beep plays once at sequence start, never per step; it
+  is suppressed when any question in the file sets `no_beep`.
 
 ## 7. Motion
 
@@ -272,8 +303,8 @@ glitches.
   both channels stay synchronized while the hue changes smoothly. The
   line's width moves continuously.
 - **Step transition (§12):** the content region (metadata row, body, button
-  row) crossfades over **180ms**, main curve, with the incoming content
-  rising **2pt** into place. Chamfer, border, glow, and drain line persist
+  row, answer field) crossfades over **180ms**, main curve, with the incoming
+  content rising **2pt** into place. Chamfer, border, glow, and drain line persist
   untouched - only content fades; the window never closes or respawns.
 - **Reduce Motion** (`NSWorkspace.accessibilityDisplayShouldReduceMotion`,
   observed live): entrance becomes opacity-only, **100ms**, no scale, no glow
@@ -298,6 +329,10 @@ glitches.
     (markdown syntax stripped, emphasis preserved as traits).
   - Each answer button is an `AXButton` with its label as the title. Close
     is an `AXButton` labeled "Close".
+  - The answer field (§13) is an `AXTextField` labeled **"custom answer"**
+    with the placeholder string as its help; it follows the answer buttons in
+    the AX element order. On commit, one announcement carries the typed
+    string as the answer - posted before the exit fade starts.
   - The panel's `defaultButtonCell` is the default button, so VoiceOver and
     the key plumbing share one source of truth.
   - Countdown: a static text element ("42 seconds remaining"), `AXValue`
@@ -317,7 +352,9 @@ glitches.
   `Text` link runs expose no per-link cursor geometry, so link rectangles
   derive from a parallel TextKit layout of the same attributed string (same
   fonts, kerning, and block offsets); an affordance rectangle a few points
-  off never changes behavior - taps and URL opening stay SwiftUI's.
+  off never changes behavior - taps and URL opening stay SwiftUI's. The
+  answer field (§13) shows the I-beam text cursor, set in the same explicit
+  mouse-moved path.
 - Reduce Motion: §7.
 - The panel never activates the app (§10), so it never disrupts the user's
   VoiceOver cursor or focus in the host app.
@@ -389,6 +426,38 @@ readable:
   1px `white 18%` hairline; hover/pressed per §2 via pointer-enter/exit
   state. The default button's fill and dark label follow §2; its glow rides
   on the button's own layer `shadowPath`.
+- **Answer field first responder (§13).** The field never becomes the
+  panel's initial first responder: set `panel.initialFirstResponder` to the
+  default button before `makeKey()`. Leaving it nil is a trap - AppKit
+  resolves the initial key view down the key-view loop, the field is first
+  in the Tab chain, and Return-on-appear would land in the field instead of
+  the default button. The field takes focus only by click, Tab, or
+  printable-key capture, never at show time.
+- **Printable-key capture (§13).** One mechanism, named: the same local
+  `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` that owns Escape
+  also routes printable characters. KeyDown with no command/option/control
+  flags and a single printable `characters` string, while the field is not
+  first responder: `makeFirstResponder(field)`, then re-dispatch the same
+  event so the field editor inserts it. A field delegate cannot do this -
+  it never sees keys while its field is unfocused - so the delegate is not
+  the capture mechanism. Tab, Return, Escape, and modifiers-carrying
+  keydowns are not captured; they keep their existing routes.
+- **Answer field chrome (§13).** A single-line AppKit `NSTextField` wrapped
+  in `NSViewRepresentable`, masked by its own 7pt chamfer path. `bordered =
+  false`, `drawsBackground = false` - the layer fill paints the §2 states;
+  the focus ring is never drawn (the hairline is the focus state). Caret:
+  the field editor's `insertionPointColor` set to `accent` when editing
+  begins; selection: the editor's `selectedTextAttributes` background
+  `accent` @ 35%. The caret lives inside the masked content tree - the §4
+  chamfer mask already clips it; never build a caret overlay outside the
+  mask.
+- **AppleScript fallback parity (§13).** The skill's `display dialog`
+  fallback passes `default answer ""` and maps: `text returned` non-empty +
+  a button click → stdout the typed string, exit 0; `text returned` empty +
+  a button click → stdout `button returned`, exit 0. Escape cancels
+  (`CANCELED`, exit 2) even with text typed; a bound expiry prints
+  `GAVE-UP` (exit 3) and discards the text. Same stdout contract, no new
+  exit codes.
 - **Block body rendering (§11).** Parse once with `interpretedSyntax: .full`
   and split blocks by grouping consecutive runs with equal
   `PresentationIntent`. Newline scanning cannot find block boundaries:
@@ -411,8 +480,10 @@ readable:
   via snapshot: render the outgoing content into one layer, swap the live
   content to the next question, fade the snapshot 180ms, remove it - no
   second live view tree, no duplicate AX elements. Reassign
-  `panel.defaultButtonCell` and rebuild the Tab chain at each swap; the
-  Escape monitor and the drain layer stay put.
+  `panel.defaultButtonCell` and rebuild the Tab chain at each swap (the
+  chain includes the answer field, §13); the swap clears the field and
+  releases its focus; the Escape/printable-key monitor and the drain layer
+  stay put.
 - **Sequence startup (§12).** Read stdin to EOF for `-`, cap the document at
   256KiB, decode with `Codable` (unknown fields ignored), validate every
   question, and only then build the first panel - a batch must not show
@@ -437,6 +508,42 @@ readable:
   the seconds text - never the title, the step indicator, or the body - so
   §12's step transition fires exactly once per step change regardless of a
   running bound.
+- **Attention probes (§14).** The identification walk and the visibility
+  query are in-process; every probe is failure-wrapped and **no crash** is the
+  standing rule. A panel whose ancestry dead-ends at a non-GUI process
+  (`sshd`, `launchd`, a CI runner) resolves UNKNOWN and the panel behaves
+  exactly as v0.2.0 (measured shape: a launchd-spawned probe's walk terminated
+  after one hop). A failed or timed-out probe yields no signal; a failed
+  visibility read skips the tick; a failed display read reads awake. The tmux
+  client probe spawns a subprocess off-main with a **2s** kill budget. The
+  identification walk runs once per invocation and is cached; only the
+  visibility query re-runs on the tick.
+- **Attention permissions.** `CGWindowListCopyWindowInfo` needs no Screen
+  Recording permission for the fields the visible test reads: owner pid,
+  bounds, and layer are ungated; only `kCGWindowName` (window titles) is
+  TCC-gated, and the probe never reads it (measured from an ungranted
+  context: 15/15 owner pids and bounds, 0/15 names). The demoted secondary
+  signals (`NSWorkspace.frontmostApplication`,
+  `CGEventSource.secondsSinceLastEventType`) are likewise permissionless.
+  (The posted-event test driver's Accessibility grant belongs to the calling
+  terminal, unchanged.)
+- **Attention activation.** Escalation is the only activation: the process
+  keeps `.accessory` + `.nonactivatingPanel` (§10) for its whole life, and
+  `NSApp.activate(ignoringOtherApps: true)` runs only in the §14 escalation
+  sequence, before `makeKeyAndOrderFront`. It makes ask-away the active
+  application (the host app deactivates); when the panel closes, the process
+  exits and the system restores focus on its own - no restore dance, no
+  re-activation of ask-away. On the macOS 13 floor
+  `activate(ignoringOtherApps:)` is the floor-legal spelling; the macOS 14+
+  deprecation warning is expected and must not be "upgraded" past the floor.
+- **Attention cadence.** One **1 Hz** `Timer` on the main RunLoop drives
+  detection. It shares nothing with the drain display link (§6) and does no
+  display-link work; a tick's cost is a few in-process calls plus at most
+  one spawned probe. State changes apply on the main thread only.
+- **Attention first evaluation.** Detection never delays the panel: layout,
+  placement, and key status are unchanged at show time. The first state
+  evaluation is scheduled async at show time and must complete within **1s**;
+  the appear beep waits for it (§6, §14).
 - **Assumption:** macOS 13+ floor (SwiftUI-in-NSPanel, `AttributedString`
   markdown parsing). Confirm the minimum OS before implementation; nothing
   in this spec needs newer APIs except the display link (fall back to
@@ -578,8 +685,10 @@ one line of compact JSON, UTF-8, trailing newline:
 
 - `results[i].index`: 0-based question index.
 - `status`: `answered` | `canceled` | `closed` | `gave-up`. `answer` is
-  present iff `answered`, and carries the button text verbatim (a button labeled
-  `Cancel` answers `"Cancel"`).
+  present iff `answered`, and carries the answer string verbatim - the
+  clicked button's text or the string typed into the answer field (§13);
+  the two are shape-identical in the JSON (a button labeled `Cancel`
+  answers `"Cancel"`, and so does typing `Cancel`).
 - Invariants: entries appear in order for every question that was presented;
   entries before `stopped_at` are all `answered`; `results.count ==
   stopped_at + 1` when stopped early (the stopped entry included);
@@ -597,16 +706,20 @@ one line of compact JSON, UTF-8, trailing newline:
   The frame is computed once from all questions and never changes
   mid-sequence: width by the §1 rule requiring every question's body to fit
   2 lines (else 520pt); height = the maximum per-question height under §1's
-  formula and caps. Content is top-anchored, buttons bottom-anchored; a
-  short question leaves quiet space rather than resizing the window.
+  formula and caps. Content is top-anchored; the button row and the answer
+  field are bottom-anchored, the field always the last row above the bottom
+  padding (§13); a short question leaves quiet space rather than resizing
+  the window.
 - **Step indicator.** Metadata row right side: **`2/3`**, current step
   1-based, plain integers, always `accent`. The indicator contains only
   `k/n`; the countdown remains separate at the lower left above the drain
   origin (§6). A single-question file renders no indicator.
 - **Transition.** Each step change crossfades the content region (metadata
-  row, body, button row) per §7: **180ms**, main curve, incoming content
-  rising **2pt**. No window close/respawn, no resize, no chrome animation.
-  Reduce Motion: opacity-only **100ms**, no slide.
+  row, body, button row, answer field) per §7: **180ms**, main curve,
+  incoming content rising **2pt**. No window close/respawn, no resize, no
+  chrome animation. Reduce Motion: opacity-only **100ms**, no slide. The
+  answer field clears at each step start and enters the step unfocused;
+  typed text never carries across steps.
 - **Drain line and countdown.** The bound is per question: each step's
   deadline restarts from that step's `give_up_after`. At a step start the
   line resets to full width and `accent` **instantly** (a width crossfade
@@ -637,6 +750,12 @@ one line of compact JSON, UTF-8, trailing newline:
   is `CANCELED`, exit 2. The asymmetry is deliberate.
 - **Give-up at step k**: entry `k` is `gave-up`, `stopped_at = k`, exit
   **3**; earlier answers are in `results`.
+- **Attention (§14) is invocation-level.** The document schema gains no
+  attention fields in v1 - attention is a setting about the human, not about
+  a question. State is computed once at panel launch and re-evaluated on the
+  running timer across steps; escalation targets the panel, never a step;
+  answered, `canceled`, `closed`, and `gave-up` all end the detector. The
+  appear beep evaluates once at sequence start under the §14 policy.
 
 **Accessibility.** At each step change the panel posts one accessibility
 announcement: **"Question k of n: <title>. <plain body>"** (markdown
@@ -650,6 +769,383 @@ cursor - the announcement carries the context instead.
 
 ---
 
+## 13. Custom answer field (amends §1 sizing, §2 states, §3, §5, §7, §8, §10, §12)
+
+Every panel carries one free-text answer field: a single-line input under
+the button row, on single questions and on every batch step. Buttons stay
+the primary channel; the field is the always-present second channel for
+answers the button set cannot express. No new flags, no new exit codes.
+
+**Geometry.** Height **28pt**, full inner width (panel width minus 40pt),
+the buttons' **7pt** top-left/bottom-right chamfer cuts (§4). It sits
+**8pt** below the button row. **Amended in the v0.3.0 fix round:** the
+lower-left countdown owns its own band - the drain line occupies y 0-2,
+the §6 countdown host y 4-18 (14pt), then an **8pt gap**, so the field's
+base sits at **y 26** from the panel's bottom edge. The retired flat
+"20pt bottom padding" placed the field's lower hairline 2pt from the
+countdown text (owner-reported collision); the band arithmetic replaces
+it. §1's height formula gains 6pt; the §12 fixed frame is computed from
+the same formula.
+
+**Typography.** Text and placeholder in SF Pro Text 13pt / 400 / 17pt line
+height / -0.1pt tracking (§3) - the body family, never mono: typed prose is
+content, not measurement. Inner horizontal padding **10pt**, vertically
+centered. Placeholder: **"Type your own answer - Return sends it"** in
+`text-secondary`.
+
+**States.** Per §2: idle fill `white 2%`, hairline `white 18%`; focused
+fill `accent 8%`, hairline `accent 65%`; no hover and no pressed state - it
+is a text field. Idle-to-focused crossfade: the §7 button timing,
+**120ms** ease-out. Caret `accent`; selection `accent` @ 35% behind
+`text-body` text. No dotted focus ring - the hairline is the focus state,
+the same stance as the buttons.
+
+**Commit semantics (normative).**
+
+- Return with the field focused and non-empty: the typed string **is** the
+  answer - verbatim, no trim - printed on stdout with a trailing newline,
+  exit **0**; in a batch it is `{"status": "answered", "answer": "<the
+  typed string>"}`. The string is a first-class answer: in single mode it
+  never maps to `CANCELED`, even when it equals a button label (the legacy
+  single-mode `Cancel`-button mapping applies to the button path only).
+- Return with the field empty or unfocused: the default button fires
+  (unchanged §5 behavior).
+- Pointer clicks always answer with the clicked control; only the Return
+  key consults the field. A button click never sends the typed string.
+- Escape anywhere - including focused in the field - is `CANCELED`, exit
+  **2**. Close is `CLOSED`, exit **4**. A bound expiry is `GAVE-UP`, exit
+  **3**. In all three the uncommitted field text is discarded, never
+  printed.
+- The field is single-line: Return never inserts a newline into it, so
+  stdout stays one line.
+
+**Keyboard (normative).**
+
+- Initial focus is never the field: on appear, Return hits the default
+  button (§10 first-responder note).
+- A printable character typed while the field is unfocused moves focus to
+  the field and inserts it - the macOS search-field pattern, driven by the
+  panel's local keyDown monitor (§10).
+- Tab order: the field first, then the buttons in row order (a wrapped §12
+  layout reads row by row), then Close; Shift-Tab walks it backwards. One
+  Tab from a fresh panel reaches typing - the one action with no key of its
+  own. In the VoiceOver element order the field follows the buttons (§8);
+  the two orders disagree on purpose.
+- Escape precedence: the keyDown monitor intercepts Escape before the field
+  editor sees it, whatever the focus.
+- Close while the field is focused works: the X consumes its own click
+  (§5), the field editor deactivates without committing, exit **4**.
+  Starting a background drag (§10) blurs the field the same way, without
+  committing.
+
+**Batch.** The field clears at each step start and enters the step
+unfocused; typed text never carries across steps. A typed answer answers
+only its own step, exactly like a button click. In the §12 step transition
+the field is part of the fading content region.
+
+**VoiceOver.** An `AXTextField` labeled **"custom answer"**; the
+placeholder string is its help. It follows the answer buttons in the AX
+element order; the Tab chain reaches it first (above). On commit the panel
+posts one accessibility announcement carrying the typed string, before the
+exit fade starts, so VoiceOver reads the answer being sent. Pointer cursor
+over the field: the I-beam, set in §8's explicit mouse-moved path.
+
+**AppleScript fallback parity.** The skill's `display dialog` fallback
+renders the field natively via `default answer ""`: `text returned`
+non-empty + a button click → stdout the typed string, exit **0**; empty →
+stdout `button returned`, exit **0**. Escape cancels (`CANCELED`, exit
+**2**) even with text typed; a bound expiry prints `GAVE-UP` (exit **3**)
+and discards the text. Same stdout contract, no new exit codes.
+
+---
+
+## 14. Attention-aware escalation (amends §6 beep, §10 notes, §12 batch)
+
+The trigger is **visibility of the hosting runtime's window**, not focus. The
+panel escalates only when the evidence says the human cannot see the question:
+the GUI application hosting the asking agent owns no on-screen window, the
+multiplexer client is detached, or the display is hard-absent. Agent-agnostic
+by construction: no per-agent identification, no registry - the app answers
+one question only, "is whatever runtime the agent sits inside of out of
+view?" The identified host is whatever it is: a terminal emulator, the ChatGPT
+desktop app, Cursor, Zed, an IDE.
+
+One unforgivable failure: stealing focus on a wrong guess. UNKNOWN therefore
+never escalates, escalation requires the ABSENT state - a truth-table row at
+a tick, never a judgment call - and every threshold is a named constant.
+Attention changes WHEN the human is pulled to the panel, never WHAT is
+answered: no new exit codes, no new stdout, outcomes byte-identical.
+
+**Identification - the hosting GUI application.** Walk the ancestor process
+chain (sysctl `KERN_PROC_PID` ppid walk from `getpid()`, capped at
+`MAX_ANCESTOR_HOPS`). The first ancestor that is a GUI application is the
+host. A GUI application means all three:
+
+- `NSRunningApplication(processIdentifier:)` resolves;
+- `activationPolicy == .regular` - LSUIElement (`.accessory`) menu-bar apps,
+  background services, and `.prohibited` non-app processes are walked past;
+- the process owns at least one window: a full (non-`onScreenOnly`)
+  `CGWindowListCopyWindowInfo` filtered by owner pid contains an entry at
+  `HOSTING_WINDOW_LAYER`.
+
+Shells, runtimes, node processes, `sshd`, `login`, launchd: all resolve no
+claim and the walk continues. Measured on the reference machine: an agent in
+a Herdr pane resolves Ghostty at hop 10 (through the Herdr service and two
+shells), and an agent runtime's node processes carry nil bundle ids with
+policy `.prohibited` - the policy + window-ownership test identifies a host
+where a name or bundle-id table would fail. **No terminal-name table, no
+`TERM_PROGRAM` consultation, and no bundle-id matching exist in this
+model**: identification is structural, so a hosting app that ships tomorrow
+is covered with no spec change.
+
+If the walk finds no GUI application, apply the multiplexer refinement below.
+If that also fails, the host is unidentified: **UNKNOWN** - the panel renders
+and answers normally and never escalates.
+
+**Multiplexer refinement.** The agent's ancestry may pass through a
+multiplexer SERVER that has no GUI ancestor (a tmux server daemonizes under
+launchd; a headless Herdr service boots under launchd). When the environment
+marks a multiplexer (`TMUX` / `HERDR_ENV` / `ZELLIJ` / `STY`) and the walk
+finds no GUI application, the hosting app is the attached client's terminal:
+
+- **tmux.** The pane env carries the socket path and session. Resolution
+  steps, in order: (1) run `tmux -S <socket> list-clients -t <session>` with
+  the inherited env; (2) parse exit-qualified: exit 0 + one or more client
+  lines = attached; exit 0 + **empty stdout = detached** (measured: 0 bytes,
+  exit 0; the alternative probe `display -p '#{client_attached}'` prints an
+  empty value for a detached pane, never `0` - a naive `!= 1` parse would
+  misread probe failure as absence); anything else = no signal; (3) take each
+  attached client's tty from the leading `/dev/ttysNNN:` field of its
+  `list-clients` line; (4) find the client process: scan `KERN_PROC_ALL` for
+  the process whose controlling terminal is that tty (measured: exactly one
+  match, the `tmux attach` client - pane processes never carry the client's
+  tty, they hang off the server's PTYs); (5) walk that client's ancestor
+  chain with the same GUI-application rule as above (measured: tmux client ->
+  script -> runtime -> shells -> ghostty, hop 10). Multiple clients on one
+  session: every client's resolved app joins the hosting set; VISIBLE if any
+  of them owns an on-screen window, UNKNOWN if none resolves.
+- **Herdr.** Probed (v0.7.5, protocol 17): the CLI exposes pane-level focus
+  and a server-side pane tty but no attached-client or client-tty query - the
+  API schema's `no_foreground_client` exists only as a notification and
+  window-title reason, proving the server tracks client presence internally
+  without exposing it. When the Herdr server was launched from a terminal,
+  the ordinary walk still finds that terminal (measured: ghostty, hop 10) and
+  it is used as the host, whatever it now shows. When the walk finds nothing
+  - a headless server under launchd - Herdr resolves **UNKNOWN** in v1. A
+  future CLI client query (the `no_foreground_client` reason is the hook)
+  upgrades this to a detach probe without touching any other rule.
+- **zellij / screen** (`ZELLIJ` / `STY`): detection only, no client
+  resolution in v1 - no GUI ancestor resolves **UNKNOWN**.
+
+A detached multiplexer client is high-confidence ABSENT regardless of
+everything else (tmux in v1; signals table row 3).
+
+**Signals.** All local, all permissionless:
+
+| # | Signal | Mechanism | On failure |
+| --- | --- | --- | --- |
+| 1 | Hosting identification | ancestry walk + multiplexer refinement above | unidentified |
+| 2 | Hosting visibility | `CGWindowListCopyWindowInfo([.onScreenOnly, .excludeDesktopElements])`: count entries whose owner pid is the hosting app (or one of its child helper processes) with `kCGWindowLayer == HOSTING_WINDOW_LAYER` and both `kCGWindowBounds` dimensions >= `MIN_ONSCREEN_WINDOW_DIMENSION_PTS` | no signal: skip the tick |
+| 3 | Multiplexer client attach | tmux `list-clients` parse above (only when `TMUX` set); detached is ABSENT, not UNKNOWN | no signal |
+| 4 | Hard absence | `CGDisplayIsAsleep(CGMainDisplayID()) != 0`, or `NSWorkspace.shared.runningApplications` contains bundle id `com.apple.screensaver` | reads awake |
+
+Signal 2 is the primary. One query covers the current Space on every display:
+a minimized window drops out (measured) and a window on another native Space
+drops out (measured: moving one window to its own fullscreen Space drove every
+other application's on-screen count to 0 and back). `kCGWindowName` is never
+read - it is the only Screen-Recording-gated field; owner pid and bounds are
+ungated (measured from an ungranted context: 15/15 pids and bounds, 0/15
+names).
+
+**Secondary signals, demoted.** Focus
+(`NSWorkspace.shared.frontmostApplication`) and input idle
+(`CGEventSource.secondsSinceLastEventType`) do not appear in the truth table
+and never trigger escalation. Visible-but-unfocused must not escalate - the
+agent pane on the left, the browser focused on the right, is a human who can
+see the question where it appeared - and under the visibility model that case
+is simply VISIBLE: the panel stays quiet and non-activating. The two signals
+are reserved for beep-policy refinement or future tuning only; they remain
+permissionless (not an event tap, no Accessibility).
+
+**Modeled limitations (deliberate, safe direction - they can only suppress
+escalation, never cause it):**
+
+- A window fully occluded behind other windows still counts as visible
+  (measured). No escalation - the human may be reading it through the stack.
+- A window positioned outside the visible frame still counts as visible
+  (measured: windows parked off-edge by simulated workspace managers report
+  on-screen with their off-frame bounds). Safe direction.
+- On-screen covers current Spaces and all displays in one query; there is no
+  per-display visibility grading in v1.
+- Herdr stale launch: a server started from terminal A whose client later
+  moved elsewhere (or closed) can still resolve A while A owns windows. The
+  miss is bounded - a plausible viewing surface exists - and v1 accepts it
+  until a client query ships.
+
+**States (truth table, precedence-ordered).** Evaluate top to bottom each
+tick; the first matching row is the state.
+
+| Row | Condition | State |
+| --- | --- | --- |
+| 1 | Display asleep or screensaver running | **ABSENT** |
+| 2 | Multiplexer client detached (tmux in v1) | **ABSENT** |
+| 3 | Hosting app identified and owns >= 1 on-screen window | **VISIBLE** |
+| 4 | Hosting app identified and owns 0 on-screen windows, held continuously for `--absent-after` seconds | **ABSENT** |
+| 5 | Everything else: no GUI ancestor, a multiplexer client that is attached but unresolvable, failed reads, and row 4's hold still accruing | **UNKNOWN** |
+
+- Row 4's hold is the gesture filter: Space switches and Mission Control
+  sweeps flash a window out of the on-screen set for well under a second, so
+  only sustained absence qualifies. Any on-screen window tick resets the
+  accrual. While the hold accrues the state is UNKNOWN - a flicker never
+  trips the table.
+- UNKNOWN is treated as VISIBLE for escalation: it never activates, never
+  raises the level, never triple-beeps.
+- Row 3 is not a guess about eyeballs: an on-screen window is window-server
+  truth, and visible-but-unfocused is exactly the case that must stay quiet.
+
+**Escalation.** The one place the non-activating design (§10) is ever
+overridden. Preconditions: state ABSENT - never UNKNOWN. Sequence, in order,
+on the main thread:
+
+1. `NSApp.activate(ignoringOtherApps: true)`
+2. `panel.makeKeyAndOrderFront(nil)`
+3. `panel.level = .screenSaver` - stays for the invocation's lifetime,
+   never downgraded
+4. Triple beep: three `NSSound.beep()` calls `BEEP_GAP_SECONDS` apart
+
+Fires once per invocation and **stays fired**: a later VISIBLE re-attaches
+no cancel, replays no beep, and never hands key or level back - the panel is
+already in the human's face; answer or close it. Parallel invocations (§9)
+each run the detector; concurrent escalations stack at the raised level and
+the most recent holds key.
+
+**Timing.**
+
+- Panel appear is never delayed (§10). The first evaluation lands within
+  `FIRST_EVALUATION_DEADLINE_SECONDS` of appear and carries the appear beep
+  (§6).
+- ABSENT at the first evaluation escalates **immediately** - rows 1 and 2 are
+  the only rows that can be ABSENT that early (row 4 needs `--absent-after`
+  seconds of accrual by construction), which is the launch case where the
+  absence provably predates the question: a detached client, a sleeping
+  display, an active screensaver. `--interrupt-after` does not delay the
+  launch case.
+- Mid-flight: re-evaluate every `ATTENTION_TICK_SECONDS`. Confirmed ABSENT
+  must hold on consecutive ticks for `--interrupt-after` seconds (default 0:
+  the first ABSENT tick escalates; N = N consecutive ABSENT ticks). Any
+  non-ABSENT tick cancels the pending hold and, for row 4, resets the
+  visibility accrual.
+- Escalation never touches the give-up bound: `--give-up-after` keeps
+  draining; a panel whose human never returns still gives up (§6) and
+  prints `GAVE-UP`.
+
+**Beep policy.**
+
+| State at first evaluation | Beep |
+| --- | --- |
+| VISIBLE | single, as today |
+| UNKNOWN | single |
+| ABSENT | triple, as part of the escalation |
+
+`--no-beep` silences all of it; the escalation's other three steps still run.
+In a sequence the policy is evaluated once at sequence start, never per step
+(§12).
+
+**SSH and other headless launches (explicit).** A panel shown on machine B's
+display by an agent running over SSH from machine A resolves **UNKNOWN on B**
+unless its ancestry happens to be local: the walk from the panel's parent
+hits `sshd` or launchd, no GUI application and no multiplexer client
+resolves, and the UNKNOWN rows apply - no escalation, standard single beep,
+exactly v0.2.0 behavior. Same for CI and cloud-spawned panels. That is the
+safe default: a machine about which the agent can prove nothing is a machine
+it never interrupts.
+
+**CLI (additive).**
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| - | on | Detection + escalation run unless disabled |
+| `--interrupt-after SECONDS` | 0 | Mid-flight ABSENT hold before escalation; 0 = immediately on confirmed ABSENT |
+| `--absent-after SECONDS` | 20 | Seconds of zero on-screen hosting windows before visibility absence qualifies as ABSENT (the gesture filter) |
+| `--no-attention` | off | No detection, no escalation: panel behaves exactly as v0.2.0 |
+
+- `SECONDS` takes non-negative integers; violations are usage errors (exit
+  1, flag named on stderr, nothing on stdout). `--help` documents all three.
+- `--no-attention` **conflicts** with `--interrupt-after` and
+  `--absent-after` (exit 1, conflict named) - §12's rule: silent precedence
+  hides a broken caller. `--no-attention` and `--no-beep` are orthogonal:
+  one kills the brain, the other the sound.
+- **No per-question attention fields in v1.** The batch schema (§12) gains
+  nothing: attention is a human-level setting, not a question-level one.
+- **AppleScript fallback:** `ask.sh` forwards the flags and the fallback
+  accepts them as inert - `display dialog` has no attention model and
+  behaves exactly as today. Same documented-renderer-limitation pattern as
+  `--questions-file` there.
+
+**Named constants.**
+
+| Constant | Value | Role |
+| --- | --- | --- |
+| `ABSENT_AFTER_DEFAULT_SECONDS` | 20 | Row 4 visibility-absent hold (flag default) |
+| `INTERRUPT_AFTER_DEFAULT_SECONDS` | 0 | Mid-flight ABSENT hold (flag default) |
+| `ATTENTION_TICK_SECONDS` | 1 | Detection cadence |
+| `FIRST_EVALUATION_DEADLINE_SECONDS` | 1 | First evaluation after appear |
+| `BEEP_GAP_SECONDS` | 0.25 | Triple-beep spacing |
+| `MAX_ANCESTOR_HOPS` | 32 | Identification walk cap |
+| `MULTIPLEXER_PROBE_TIMEOUT_SECONDS` | 2 | tmux client-probe subprocess budget |
+| `HOSTING_WINDOW_LAYER` | 0 | The window layer that counts as a normal window |
+| `MIN_ONSCREEN_WINDOW_DIMENSION_PTS` | 1 | Minimum width and height of a counting window |
+
+`PRESENT_IDLE_MAX_SECONDS` from the focus-primary model is retired with that
+model; `TMUX_PROBE_TIMEOUT_SECONDS` is renamed
+`MULTIPLEXER_PROBE_TIMEOUT_SECONDS` (same value, broader scope).
+
+**What the implementer cannot verify headlessly.** The implementation is
+delegated to a worker with no screen. The worker CAN verify offline: flag
+parsing, defaults, and conflicts (exit 1 cases); `--help` text;
+`--no-attention` equivalence to v0.2.0 through the existing behavioral and
+posted-event suites; the identification walk against synthetic pid chains
+(GUI app found at depth, no GUI app -> UNKNOWN, multiplexer branch entered on
+env markers); the tmux probe's parse against a scripted detached session
+(exit 0 + empty stdout) and an attached session (tty line -> client pid ->
+ancestor chain); and that all probes return rather than crash without a GUI
+session. The worker CANNOT verify live visibility behavior - these need a
+human at the display:
+
+1. **Visible:** with the hosting window on screen while another app is
+   focused (work in the browser, panel's host visible beside it): single
+   beep, no activation, ever, for the whole bound.
+2. **Other Space:** switch Space away from the hosting window
+   (`--absent-after 5`): escalation follows after the hold; switch back
+   before the hold completes: nothing. (A real hand on ctrl-arrow is required
+   here: synthetic arrow events are swallowed by this machine's input
+   remaps.)
+3. **Minimized:** `cmd-M` the hosting window: escalation after the hold;
+   un-minimize before it fires cancels the pending escalation.
+4. **Occluded:** fully cover the hosting window with another app's window:
+   no escalation, ever - deliberate, safe direction.
+5. **Detach:** inside tmux, ask, detach (prefix `d`): escalation within
+   ~1.5s of the detach even with the terminal visible and focused; reattach
+   and answer.
+6. **Hard absence:** start the screensaver (or let the display sleep) with a
+   panel open: immediate escalation; on wake the panel is frontmost at the
+   raised level. This run also confirms the `com.apple.screensaver` process
+   check on this macOS.
+7. **Unknown shape:** SSH in from another machine and run the panel there:
+   single beep, never escalates for the whole bound (leave the machine alone
+   past `--absent-after`).
+8. **`--no-attention`:** repeat scenario 2: single beep, no activation,
+   v0.2.0 behavior.
+9. **Herdr:** ask from a Herdr pane whose server was launched from a visible
+   terminal: no escalation while that terminal shows a window (v1 resolves
+   it as the host). Then confirm the documented v1 miss reads as acceptable:
+   close the Herdr client, keep the terminal open and visible - no escalation
+   fires (limitation, not a bug).
+
+---
+
+---
+
 Design provenance: spec authored by design-agent under the impeccable
 workflow; decisions and machine-made calls are recorded in `ledger.tsv`
 (git-ignored). Proportion check artifact: `.scratch/ask-away-design/mock2.png`
@@ -659,4 +1155,17 @@ rows D12-D18, Foundation `.full` parsing probe in
 `.scratch/ask-away-amend/`. The v0.1.1 amendments (§8 pointer cursor,
 §10 background dragging and per-tick isolation) were authored against
 real-use defect reports; evidence and machine-made calls in
-`.scratch/ask-away-v011/ledger.tsv` (git-ignored).
+`.scratch/ask-away-v011/ledger.tsv` (git-ignored). The custom-answer-field
+amendment (§13) was authored 2026-10-04 by design-agent against a fixed
+caller brief; machine-made calls in ledger rows D25-D27, contrast
+arithmetic in `.scratch/ask-away-fieldamend/contrast.py` (git-ignored). The
+attention-aware-escalation amendment (§14) was authored 2026-10-04 by
+design-agent against a fixed caller brief; machine-made calls in ledger rows
+D28-D30, signal probes in `.scratch/ask-away-attention/` (git-ignored). The
+§14 hosting-visibility rewrite was authored 2026-10-04 by design-agent after
+the owner redirected the trigger from frontmost focus to window visibility;
+machine-made calls in ledger rows D31-D34, live probes in
+`.scratch/ask-away-visibility/` (git-ignored). The §13 countdown-band
+geometry amendment (field base y 26, chrome 152/190) was authored in the
+v0.3.0 fix round against an owner-reported field/countdown collision;
+machine-made call in ledger row D35.

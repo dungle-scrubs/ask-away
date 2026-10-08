@@ -47,6 +47,11 @@ enum Theme {
     static let buttonGhostFont = NSFont.systemFont(ofSize: 13, weight: .medium)
     static let buttonDefaultFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
     static let buttonKerning: CGFloat = 0.1
+    /// Answer field text and placeholder (section 13): SF Pro Text 13/400,
+    /// 17pt line height, -0.1pt tracking - the body family, never mono.
+    static let fieldFont = NSFont.systemFont(ofSize: 13, weight: .regular)
+    static let fieldLineHeight: CGFloat = 17
+    static let fieldKerning: CGFloat = -0.1
 
     static let metadataSwiftUIFont = Font(metadataFont)
     static let bodySwiftUIFont = Font(bodyFont)
@@ -63,7 +68,25 @@ enum Theme {
     static let metadataToBody: CGFloat = 10
     static let bodyToButtons: CGFloat = 18
     static let buttonRowHeight: CGFloat = 30
-    static let bottomPadding: CGFloat = 20
+    /// Answer field geometry (section 13): 28pt tall, full inner width, the
+    /// buttons' 7pt chamfers, 8pt below the button row, 10pt inner text
+    /// inset, sitting in the 20pt bottom padding band above the drain line.
+    static let answerFieldHeight: CGFloat = 28
+    static let buttonToFieldGap: CGFloat = 8
+    static let fieldHorizontalInset: CGFloat = 10
+    static let fieldCut: CGFloat = 7
+    /// The field block below the button row: the field plus its gap.
+    static let fieldBlockHeight: CGFloat = answerFieldHeight + buttonToFieldGap
+    static let answerFieldPlaceholder = "Type your own answer - Return sends it"
+    /// The countdown band (section 6): the seconds host sits at y=4 with
+    /// the 14pt metadata height, so it occupies y 4..18. The field must
+    /// clear it, not overlap it: the field base rises above the countdown
+    /// band plus an 8pt gap (amended section 13 geometry; the old flat
+    /// 20pt bottom padding is retired).
+    static let countdownY: CGFloat = 4
+    static let fieldToCountdownGap: CGFloat = 8
+    /// Everything above the drain line stacks from here: 4 + 14 + 8 = 26.
+    static let contentBaseY: CGFloat = countdownY + metadataHeight + fieldToCountdownGap
     static let buttonGap: CGFloat = 8
     static let buttonMinWidth: CGFloat = 64
     static let buttonHPadding: CGFloat = 16
@@ -132,10 +155,12 @@ enum Theme {
     /// CubicBezier(0.2, 0.8, 0.2, 1), the entrance and exit curve.
     static let mainCurve = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)
 
-    /// Fixed chrome height under section 1: 18 top + 14 metadata + 10 + 18 +
-    /// 30 button row + 20 bottom. A wrapped second button row adds 38pt.
+    /// Fixed chrome height under sections 1, 6, and 13: 18 top + 14
+    /// metadata + 10 + 18 body gap + 30 button row + 8 field gap + 28 field
+    /// + 8 field-to-countdown gap + 14 countdown + 4 countdown base = 152.
+    /// A wrapped second button row adds 38pt (190).
     static func chromeHeight(wrappedRows: Bool) -> CGFloat {
-        110 + (wrappedRows ? wrappedRowExtra : 0)
+        116 + fieldBlockHeight + (wrappedRows ? wrappedRowExtra : 0)
     }
 
     // MARK: Countdown ramp (section 2)

@@ -17,6 +17,28 @@ struct PreparedStep {
     var naturalHeight: CGFloat = 0
 }
 
+/// A plain container transparent to hit-testing: children receive their
+/// own hits, the container itself is not a mouse surface. Without this the
+/// chrome containers swallow background mouse-downs and the root's drag
+/// session (section 10) never starts - the regression the v0.3.0 screen
+/// round exposed in the v0.2.0 tree.
+@MainActor
+final class PassthroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
+}
+
+/// The vibrancy layer with the same pass-through rule.
+@MainActor
+final class PassthroughEffectView: NSVisualEffectView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
+}
+
 /// The panel's view tree. Layer chrome (ambient shadow, masked content,
 /// neon border) plus the hosted SwiftUI content and the chamfered buttons.
 /// The step-swappable region (metadata, body, buttons) lives in one
@@ -34,6 +56,10 @@ final class PanelRootView: NSView {
     private(set) var metadataHost: NSHostingView<MetadataContentView>?
     private(set) var buttons: [ChamferButton] = []
     private(set) var closeButton: ChamferButton?
+    private(set) var answerField: AnswerField?
+    /// Invoked on a background mouse-down (the drag surface) so the panel
+    /// can blur the field without committing (section 13).
+    var onBackgroundMouseDown: (() -> Void)?
     /// Body link rectangles in document-view coordinates, for the mouse-moved
     /// cursor check (v0.1.1 amendment, section 8).
     private var linkRects: [NSRect] = []
@@ -49,7 +75,8 @@ final class PanelRootView: NSView {
         bodyRegion: CGFloat,
         buttonRows: [[CGFloat]],
         buttons: [ChamferButton],
-        closeButton: ChamferButton
+        closeButton: ChamferButton,
+        field: AnswerField
     ) {
         wantsLayer = true
         layer?.masksToBounds = false
@@ -78,7 +105,7 @@ final class PanelRootView: NSView {
         // Content container masked by the chamfer path - the same CGPath
         // that draws the border (section 10: built once, used three times;
         // the ambient backplate above is the third use).
-        let content = NSView(frame: panelRect)
+        let content = PassthroughView(frame: panelRect)
         content.wantsLayer = true
         let maskShape = CAShapeLayer()
         maskShape.frame = NSRect(origin: .zero, size: panelRect.size)
@@ -87,14 +114,14 @@ final class PanelRootView: NSView {
         addSubview(content)
         contentContainer = content
 
-        let effect = NSVisualEffectView(frame: panelBounds)
+        let effect = PassthroughEffectView(frame: panelBounds)
         effect.material = .hudWindow
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.appearance = NSAppearance(named: .darkAqua)
         content.addSubview(effect)
 
-        let scrim = NSView(frame: panelBounds)
+        let scrim = PassthroughView(frame: panelBounds)
         scrim.wantsLayer = true
         scrim.layer?.backgroundColor = Theme.panelBase.withAlphaComponent(0.9).cgColor
         content.addSubview(scrim)
@@ -102,7 +129,7 @@ final class PanelRootView: NSView {
         // The step-swappable container (sections 7 and 12): metadata row,
         // body scroll, buttons. Never the vibrancy or scrim - a scrim fade
         // would flash the desktop through the panel.
-        let stack = NSView(frame: panelBounds)
+        let stack = PassthroughView(frame: panelBounds)
         stack.wantsLayer = true
         content.addSubview(stack)
         contentStack = stack
@@ -126,15 +153,18 @@ final class PanelRootView: NSView {
         self.closeButton = closeButton
 
         let seconds = NSHostingView(rootView: CountdownView(countdown: countdown))
-        seconds.frame = NSRect(x: Theme.horizontalPadding, y: 4, width: 80, height: Theme.metadataHeight)
+        seconds.frame = NSRect(x: Theme.horizontalPadding, y: Theme.countdownY, width: 80, height: Theme.metadataHeight)
         content.addSubview(seconds)
 
         // Body region: the only elastic element (section 1). An explicit
         // NSScrollView so scroller style is forced overlay regardless of the
         // system's scroll-bar setting - never a reserved gutter (section 10).
+        // The answer field block (section 13) sits under the button row,
+        // above the countdown band, so the body's bottom rises by the same
+        // amount the buttons shifted.
         let bodyFrame = NSRect(
             x: Theme.horizontalPadding,
-            y: Theme.bottomPadding + buttonBlockHeight(rows: buttonRows) + Theme.bodyToButtons,
+            y: Theme.contentBaseY + Theme.fieldBlockHeight + buttonBlockHeight(rows: buttonRows) + Theme.bodyToButtons,
             width: panelRect.width - 2 * Theme.horizontalPadding,
             height: bodyRegion
         )
@@ -149,6 +179,19 @@ final class PanelRootView: NSView {
         updateLinkCursor(blocks: blocks, width: bodyWidth, viewHeight: max(naturalHeight, 1))
 
         swapButtons(buttons, rows: buttonRows)
+
+        // The answer field (section 13): full inner width above the
+        // countdown band, inside contentStack so the section 12 transition
+        // snapshots it with the rest of the step content. It is added after
+        // the buttons so the AX element order follows them.
+        field.place(in: NSRect(
+            x: Theme.horizontalPadding,
+            y: Theme.contentBaseY,
+            width: panelRect.width - 2 * Theme.horizontalPadding,
+            height: Theme.answerFieldHeight
+        ))
+        stack.addSubview(field)
+        answerField = field
 
         // Drain line: 2pt along the bottom edge, full inner width (section 6).
         // High zPosition: AppKit keeps view-backed sublayers above plain
@@ -222,6 +265,7 @@ final class PanelRootView: NSView {
     /// Controls consume their own mouse-down before it reaches this view.
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
+        onBackgroundMouseDown?()
         let origin = window.frame.origin
         let anchor = window.convertPoint(toScreen: event.locationInWindow)
         window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp, .scrollWheel], timeout: .greatestFiniteMagnitude, mode: .eventTracking) { next, stop in
@@ -274,6 +318,13 @@ final class PanelRootView: NSView {
         let overButton = controls.contains { button in
             window.convertToScreen(button.convert(button.bounds, to: nil)).contains(global)
         }
+        if let answerField {
+            let fieldRect = window.convertToScreen(answerField.convert(answerField.bounds, to: nil))
+            if fieldRect.contains(global) {
+                NSCursor.iBeam.set()
+                return
+            }
+        }
         var overLink = false
         if let bodyDocument, !linkRects.isEmpty {
             // Panel-local arithmetic from design constants and the doc's
@@ -302,7 +353,8 @@ final class PanelRootView: NSView {
     /// Rows are right-aligned; a wrapped second row sits below with the 8pt
     /// gap, both rows right-aligned, reading order preserved, and every
     /// button keeps its full 30 x width frame - wrapping never shrinks hit
-    /// targets (section 12).
+    /// targets (section 12). The whole block sits above the answer field's
+    /// band and the countdown band (section 13; Theme.contentBaseY).
     func swapButtons(_ newButtons: [ChamferButton], rows: [[CGFloat]]) {
         for button in buttons {
             button.removeFromSuperview()
@@ -316,7 +368,7 @@ final class PanelRootView: NSView {
             let totalWidth = row.reduce(0, +) + CGFloat(max(0, row.count - 1)) * Theme.buttonGap
             var x = panelWidth - Theme.horizontalPadding - totalWidth
             // First row on top when wrapped; the tail row sits at the bottom.
-            let y = Theme.bottomPadding
+            let y = Theme.contentBaseY + Theme.fieldBlockHeight
                 + CGFloat(rowCount - 1 - rowIndex) * (Theme.buttonRowHeight + Theme.secondRowGap)
             for width in row {
                 guard index < newButtons.count else { break }
@@ -360,6 +412,41 @@ final class PanelRootView: NSView {
         layer.zPosition = 100
         layer.masksToBounds = true
         return layer
+    }
+}
+
+/// Production escalation effects against the live panel, in the section 14
+/// order. The activation spelling is the macOS 13 floor-legal one; the
+/// macOS 14 deprecation is expected and must not be upgraded past the
+/// floor. Lives beside the panel it drives (AttentionController stays
+/// compilable without the UI tree, so detection tests can exercise the
+/// engine headlessly).
+@MainActor
+final class PanelAttentionEffects: AttentionEffectsObserver {
+    private weak var panel: AskPanel?
+
+    init(panel: AskPanel) {
+        self.panel = panel
+    }
+
+    func activateApplication() {
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func makeKeyAndOrderFront() {
+        panel?.makeKeyAndOrderFront(nil)
+    }
+
+    func raiseLevelToScreenSaver() {
+        panel?.level = .screenSaver
+    }
+
+    func playEscalationBeep(index: Int) {
+        NSSound.beep()
+    }
+
+    func playAppearBeep() {
+        NSSound.beep()
     }
 }
 
@@ -409,6 +496,15 @@ final class PanelController {
     private var panel: AskPanel?
     private var root: PanelRootView?
     private var keyMonitor: Any?
+    /// Interaction marker (round-2 regression fix): the first key or
+    /// mouse event that reaches the panel stands down the initial-focus
+    /// pin for the rest of the invocation. The pin exists only to undo
+    /// the makeKey key-view steal at launch; once real interaction has
+    /// begun, focus belongs to the interaction - NSApp.currentEvent
+    /// sniffing in editingBegan cannot be relied on for posted or
+    /// deferred transitions.
+    private var interactionsStarted = false
+    private var mouseMonitor: Any?
     private var ticker: DrainTicker?
     private var deadline: Date?
     private var boundSeconds: Double = 1
@@ -422,14 +518,38 @@ final class PanelController {
     /// Per-tick countdown state, isolated from StepModel: a tick re-renders
     /// only the seconds text, never the title, indicator, or body.
     private let countdown = CountdownModel()
+    /// True until the first Tab after a step starts: one Tab from the
+    /// pinned initial focus must reach the field (section 13).
+    private var freshTabPending = true
+    private var initialDefaultButton: ChamferButton?
+    private var currentDefaultButton: ChamferButton?
+    private var fieldEditorProvider: AnswerFieldEditorProvider?
+    /// Guards the printable-capture redispatch against monitor recursion.
+    private var redispatchingFieldEvent = false
+    private let attention: AttentionConfig
+    /// Constructor-injected attention dependencies: the simulator's seam.
+    /// nil means live production defaults.
+    private let attentionDependencies: AttentionDependencies?
+    private var attentionController: AttentionController?
 
     /// - Parameters:
     ///   - questions: one question, or a validated §12 sequence in file order.
     ///   - batch: true when the invocation came through --questions-file;
     ///     batch output is the JSON contract even for a single-question file.
-    init(questions: [Question], batch: Bool) {
+    ///   - attention: invocation-level attention configuration; `.disabled`
+    ///     instantiates no detector or discovery tasks at all.
+    ///   - dependencies: injected probe/effects/clock/trace; nil selects the
+    ///     live production set.
+    init(
+        questions: [Question],
+        batch: Bool,
+        attention: AttentionConfig = .standard,
+        dependencies: AttentionDependencies? = nil
+    ) {
         self.steps = questions.map { PreparedStep(question: $0, blocks: BodyBlocks($0.text).blocks) }
         self.isBatch = batch
+        self.attention = attention
+        self.attentionDependencies = dependencies
     }
 
     /// Never returns: exits the process with the outcome's contract code
@@ -465,9 +585,28 @@ final class PanelController {
         model.stepCount = steps.count
         model.indicator = isBatch && steps.count > 1 ? "1/\(steps.count)" : nil
 
-        // One beep per invocation (sections 6 and 12): the moment the panel
-        // appears; in a sequence one objection (any no_beep) silences it.
-        if steps.allSatisfy({ $0.question.beep }) {
+        // One beep per invocation (sections 6, 12, 14). With attention on,
+        // the appear beep waits for the first attention evaluation (within
+        // 1s of appear): single for VISIBLE/UNKNOWN, the escalation triple
+        // for ABSENT. With --no-attention, exactly the v0.2.0 immediate
+        // beep at the moment the panel appears.
+        let beepAllowed = steps.allSatisfy { $0.question.beep }
+        if attention.enabled {
+            guard let panel else { fatalError("attention started without a panel") }
+            let dependencies = attentionDependencies ?? AttentionDependencies(
+                probe: LiveAttentionEngine(),
+                effects: PanelAttentionEffects(panel: panel),
+                clock: .live,
+                trace: nil
+            )
+            let controller = AttentionController(
+                config: attention,
+                beepAllowed: beepAllowed,
+                dependencies: dependencies
+            )
+            controller.start()
+            attentionController = controller
+        } else if beepAllowed {
             NSSound.beep()
         }
 
@@ -644,6 +783,19 @@ final class PanelController {
         closeButton.target = self
         closeButton.action = #selector(closeClicked(_:))
 
+        let answerField = AnswerField(frame: .zero)
+        let editorProvider = AnswerFieldEditorProvider()
+        editorProvider.answerField = answerField
+        // The become-key moment is where the key-view-loop focus steal
+        // lands (makeKey on a non-activating panel takes effect a turn
+        // later, and AppKit can re-resolve the initial responder then);
+        // the pin is re-asserted at exactly that event.
+        editorProvider.onPanelBecameKey = { [weak self] in
+            self?.enforceInitialFocusPin()
+        }
+        panel.delegate = editorProvider
+        fieldEditorProvider = editorProvider
+
         let root = PanelRootView(frame: NSRect(origin: .zero, size: windowFrame.size))
         root.configure(
             title: steps[0].question.title,
@@ -655,22 +807,183 @@ final class PanelController {
             bodyRegion: bodyRegion,
             buttonRows: buttonRows[0],
             buttons: buttons,
-            closeButton: closeButton
+            closeButton: closeButton,
+            field: answerField
         )
         panel.contentView = root
         self.root = root
+        // A background drag blurs the field without committing (section 13).
+        root.onBackgroundMouseDown = { [weak self] in
+            guard let self, let panel = self.panel else { return }
+            self.root?.answerField?.endEditing(in: panel, discard: false)
+            self.root?.answerField?.refreshFocusState(panel: panel)
+        }
 
         applyStepChrome(to: panel, buttons: buttons, question: steps[0].question)
 
-        // Escape is not free in a borderless panel: bind it via a local
-        // keyDown monitor (section 10). The monitor stays put across steps.
+        // Mouse monitor: flags interaction start (pin stand-down) for
+        // click-driven focus - posted or real, either counts.
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            guard let self, !self.finished else { return event }
+            guard let panel = self.panel, event.window === panel else { return event }
+            self.interactionsStarted = true
+            return event
+        }
+        // One local keyDown monitor owns the whole keyboard surface
+        // (sections 10 and 13): Escape first, then Return routing, then the
+        // fresh-panel Tab entry, then printable capture. It stays put across
+        // steps and is scoped to this panel.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, !self.finished, event.keyCode == 53 else { return event }
-            self.escapePressed()
-            return nil
+            guard let self, !self.finished else { return event }
+            guard let panel = self.panel, event.window === panel else { return event }
+
+            // Any key event means interaction has begun: the initial-focus
+            // pin stands down from here on (see interactionsStarted).
+            self.interactionsStarted = true
+
+            // The focus pin runs ahead of the first key only: if the
+            // makeKey key-view steal left the field holding focus the panel
+            // never asked for (section 13: initial focus is never the
+            // field), the first key event is exactly the deterministic
+            // moment to undo it - no timer, and interaction start keeps it
+            // from touching deliberate focus afterward.
+
+            // Escape before the field editor, whatever the focus.
+            if event.keyCode == 53 {
+                self.escapePressed()
+                return nil
+            }
+
+            // Return routes once (section 13 table): focused non-empty
+            // answers with the typed string; anything else reaches the
+            // default button. The event is consumed when the field is
+            // focused (the editor would otherwise swallow it), and passed
+            // through when it is not, so the default key equivalent fires
+            // exactly once either way.
+            if event.keyCode == 36, !Self.modifiersCarry(event) {
+                if let field = self.root?.answerField, field.isFocused(in: panel) {
+                    let text = field.liveStringValue
+                    if text.isEmpty {
+                        self.currentDefaultButton?.performClick(nil)
+                    } else {
+                        self.typedAnswerCommitted(text)
+                    }
+                    return nil
+                }
+                return event
+            }
+
+            // Tab and Shift-Tab (section 13). Two special cases, then a
+            // deterministic cycle: the field editor's default Tab handling
+            // only walks the text-input chain under system Full Keyboard
+            // Access, so the monitor enforces the chain itself.
+            if event.keyCode == 48, !Self.modifiersCarry(event) {
+                // One Tab from the pinned initial focus reaches the field,
+                // regardless of the default button's index in the chain
+                // (the chain alone cannot express both orders).
+                if self.freshTabPending {
+                    self.freshTabPending = false
+                    if
+                        let field = self.root?.answerField,
+                        !field.isFocused(in: panel),
+                        let initial = self.initialDefaultButton,
+                        panel.firstResponder === initial
+                    {
+                        field.focus(in: panel)
+                        return nil
+                    }
+                }
+                let shift = event.modifierFlags
+                    .intersection(.deviceIndependentFlagsMask)
+                    .contains(.shift)
+                var effective: NSView?
+                if let field = self.root?.answerField, field.isFocused(in: panel) {
+                    effective = field.textField
+                } else {
+                    effective = panel.firstResponder as? NSView
+                }
+                // Walk the explicit cycle manually: selectNextKeyView does
+                // not reliably move focus off a live field editor in this
+                // non-activating panel (measured).
+                let cycle: [NSView] = self.tabCycleViews()
+                if let effective, let index = cycle.firstIndex(where: { $0 === effective }) {
+                    let target = cycle[(index + (shift ? cycle.count - 1 : 1)) % cycle.count]
+                    panel.makeFirstResponder(target)
+                    return nil
+                }
+                return event
+            }
+
+            // Printable capture (section 13): a single printable character
+            // typed while the field is unfocused focuses the field and
+            // redispatches the original event to its editor exactly once.
+            // The redispatch runs only on a VERIFIED responder -
+            // makeFirstResponder's Bool alone is not proof in this
+            // non-activating panel (measured: it returns true with the
+            // editor installed while the responder never moves) - so an
+            // unverified transition passes the key through instead of
+            // swallowing it (finding 1).
+            if
+                !self.redispatchingFieldEvent,
+                let field = self.root?.answerField,
+                !field.isFocused(in: panel),
+                Self.isPrintableKey(event)
+            {
+                self.redispatchingFieldEvent = true
+                if !panel.isKeyWindow {
+                    panel.makeKey()
+                }
+                field.focus(in: panel)
+                if field.isFocused(in: panel) {
+                    NSApp.sendEvent(event)
+                    self.redispatchingFieldEvent = false
+                    return nil
+                }
+                self.redispatchingFieldEvent = false
+            }
+            return event
         }
 
         self.panel = panel
+    }
+
+    /// The Tab cycle as an ordered array: field, answer buttons in reading
+    /// order, Close (section 13).
+    private func tabCycleViews() -> [NSView] {
+        var cycle: [NSView] = []
+        if let fieldView = root?.answerField?.textField {
+            cycle.append(fieldView)
+        }
+        cycle.append(contentsOf: root?.buttons ?? [])
+        if let close = root?.closeButton {
+            cycle.append(close)
+        }
+        return cycle
+    }
+
+    /// Command, option, or control: the carrying modifiers disqualify a key
+    /// from Return routing and from printable capture alike.
+    private static func modifiersCarry(_ event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return !mods.intersection([.command, .option, .control]).isEmpty
+    }
+
+    /// A single printable character with no command, option, or control
+    /// modifier (Shift allowed): not Return, Tab, or Escape, no function or
+    /// navigation keys, no control characters.
+    static func isPrintableKey(_ event: NSEvent) -> Bool {
+        guard !modifiersCarry(event) else { return false }
+        guard let characters = event.characters, characters.count == 1 else { return false }
+        guard let scalar = characters.unicodeScalars.first else { return false }
+        if scalar.value < 0x20 || scalar.value == 0x7F { return false }
+        // Function and navigation keys report private-use glyphs; the
+        // MacRoman command range is excluded for safety.
+        if (0xF700...0xF8FF).contains(scalar.value) { return false }
+        if (0xF000...0xF0FF).contains(scalar.value) { return false }
+        switch event.keyCode {
+        case 36, 48, 53: return false
+        default: return true
+        }
     }
 
     /// Make one step's ChamferButtons (section 5 kinds and targets).
@@ -686,16 +999,26 @@ final class PanelController {
         }
     }
 
-    /// Return plumbing (section 10) and Tab cycling (section 5), reassigned
-    /// at every step swap so Return and VoiceOver share one source of truth
-    /// (section 12).
+    /// Return plumbing (section 10) and Tab cycling (sections 5 and 13),
+    /// reassigned at every step swap so Return and VoiceOver share one
+    /// source of truth (section 12). The initial responder is pinned to the
+    /// default button - never the field (section 10) - and the Tab cycle
+    /// runs field, buttons in reading order, Close, field.
     private func applyStepChrome(to panel: AskPanel, buttons: [ChamferButton], question: Question) {
-        panel.defaultButtonCell = buttons[question.defaultIndex].cell as? NSButtonCell
+        let defaultButton = buttons[question.defaultIndex]
+        panel.defaultButtonCell = defaultButton.cell as? NSButtonCell
+        panel.initialFirstResponder = defaultButton
+        initialDefaultButton = defaultButton
+        currentDefaultButton = defaultButton
+        freshTabPending = true
+        if let field = root?.answerField {
+            field.textField.nextKeyView = buttons.first
+        }
         for (button, next) in zip(buttons, buttons.dropFirst()) {
             button.nextKeyView = next
         }
         buttons.last?.nextKeyView = root?.closeButton
-        root?.closeButton?.nextKeyView = buttons.first
+        root?.closeButton?.nextKeyView = root?.answerField?.textField
     }
 
     // MARK: Step content (section 12)
@@ -722,6 +1045,10 @@ final class PanelController {
         root?.swapButtons(buttons, rows: buttonRows[index])
         if let panel {
             applyStepChrome(to: panel, buttons: buttons, question: step.question)
+            // Enter the step unfocused, exactly like a fresh panel: the new
+            // default button holds the responder before any key arrives.
+            panel.makeFirstResponder(buttons[step.question.defaultIndex])
+            root?.answerField?.refreshFocusState(panel: panel)
         }
         startTiming()
     }
@@ -732,7 +1059,11 @@ final class PanelController {
     /// under Reduce Motion). Chamfer, border, glow, and drain line persist.
     private func transition(to index: Int) {
         guard let root, let contentLayer = root.contentContainer?.layer else { return }
+        // Snapshot the outgoing content (typed field included), then end
+        // editing without submitting and clear editor plus backing text
+        // before the swap completes (sections 10 and 13).
         let snapshot = root.snapshotContent()
+        root.answerField?.resetForStep(panel: panel)
 
         loadStep(index)
 
@@ -814,7 +1145,37 @@ final class PanelController {
         guard let panel, let layer = root?.layer else { return }
         panel.orderFront(nil)
         panel.makeKey()
+        // makeKey can hand initial focus to the field through the key-view
+        // loop even with initialFirstResponder pinned to the default button
+        // (reproduced bare), and the same steal can land a turn later when
+        // the window actually becomes key. The correction is deterministic,
+        // not timed: the pin is re-asserted here, on the next main-queue
+        // turn, on every windowDidBecomeKey, and ahead of every key event
+        // (see enforceInitialFocusPin) - and it never touches focus the
+        // user deliberately acquired (the field's userFocusAcquired flag,
+        // set only by real user input).
+        enforceInitialFocusPin()
+        DispatchQueue.main.async { [weak self] in
+            self?.enforceInitialFocusPin()
+        }
         animateEntrance(layer: layer)
+    }
+
+    /// Re-assert the pinned initial responder (sections 10 and 13: initial
+    /// focus is never the field). Runs only when the field's editor holds
+    /// the responder WITHOUT user-initiated focus - the flag is set solely
+    /// by real user input (a key or mouse event driving editing), so no
+    /// correction can remove deliberately acquired focus, and a deferred
+    /// click transition is applied instead of overridden.
+    private func enforceInitialFocusPin() {
+        guard !finished, !interactionsStarted, let panel, let field = root?.answerField else { return }
+        if field.applyPendingBecomeKeyFocus(in: panel) { return }
+        guard field.isFocused(in: panel), !field.userFocusAcquired else { return }
+        let pinned = initialDefaultButton ?? currentDefaultButton
+        if let pinned {
+            panel.makeFirstResponder(pinned)
+            field.refreshFocusState(panel: panel)
+        }
     }
 
     /// Entrance: opacity 0->1 and scale 0.98->1.0 about the center, 180ms,
@@ -930,6 +1291,29 @@ final class PanelController {
         }
     }
 
+    /// A typed answer (section 13): the live editor string, verbatim, no
+    /// trim - whitespace-only strings are non-empty, and typed Cancel,
+    /// CANCELED, CLOSED, and GAVE-UP remain answered strings with exit 0.
+    /// One announcement carries the string before the exit fade or the step
+    /// transition starts.
+    private func typedAnswerCommitted(_ text: String) {
+        if let panel {
+            NSAccessibility.post(
+                element: panel,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: "custom answer sent: \(text)",
+                    .priority: NSAccessibilityPriorityLevel.high,
+                ]
+            )
+        }
+        if isBatch {
+            recordAnswered(text)
+        } else {
+            finish(.answered(text))
+        }
+    }
+
     @objc private func buttonClicked(_ sender: ChamferButton) {
         guard !finished else { return }
         if isBatch {
@@ -1035,8 +1419,14 @@ final class PanelController {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
         }
+        if let mouseMonitor {
+            NSEvent.removeMonitor(mouseMonitor)
+            self.mouseMonitor = nil
+        }
         ticker?.stop()
         ticker = nil
+        attentionController?.stop()
+        attentionController = nil
 
         // Exit: opacity -> 0 and scale -> 1.01, 140ms, same curve; opacity-
         // only 100ms under Reduce Motion (section 7).

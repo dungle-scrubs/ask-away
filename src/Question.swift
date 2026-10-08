@@ -17,6 +17,14 @@ enum Invocation {
     case batch([Question])
 }
 
+/// Everything parseInvocation produced: the content invocation plus the
+/// invocation-level attention configuration. Attention settings belong to
+/// the invocation, never to a Question.
+struct ParsedInvocation {
+    let content: Invocation
+    let attention: AttentionConfig
+}
+
 /// One question: single mode parses it from flags; batch mode builds it
 /// from a validated questions-file entry. Both draw identically.
 struct Question {
@@ -38,6 +46,8 @@ struct Question {
         case badButtonCount(Int)
         case badDefault(String, count: Int)
         case badGiveUpAfter(String)
+        case badInterruptAfter(String)
+        case badAbsentAfter(String)
         case conflict(with: String, flag: String)
         /// A questions-file load or validation failure; the message is the
         /// SequenceFile error text (spec section 12 wording).
@@ -57,6 +67,10 @@ struct Question {
                 return "--default must be 1..\(count), got \(value)"
             case let .badGiveUpAfter(value):
                 return "--give-up-after must be a number of seconds >= 0, got \(value)"
+            case let .badInterruptAfter(value):
+                return "--interrupt-after must be a whole number of seconds >= 0, got \(value)"
+            case let .badAbsentAfter(value):
+                return "--absent-after must be a whole number of seconds >= 0, got \(value)"
             case let .conflict(with, flag):
                 return "\(with) cannot be combined with \(flag)"
             case let .documentError(message):
@@ -71,7 +85,10 @@ struct Question {
     Usage:
       ask-away --title TITLE --text TEXT --buttons B1 [B2] [B3]
                [--default N] [--give-up-after SECONDS] [--no-beep]
-      ask-away --questions-file PATH
+               [--interrupt-after SECONDS] [--absent-after SECONDS]
+               [--no-attention]
+      ask-away --questions-file PATH [--interrupt-after SECONDS]
+               [--absent-after SECONDS] [--no-attention]
 
     Single-question flags:
       --title TITLE          One line: "repo-name: what this decides".
@@ -87,6 +104,18 @@ struct Question {
                              GAVE-UP. The panel shows a draining countdown.
       --no-beep              Suppress the single beep at appearance.
 
+    Attention (works with both modes; escalation only when the hosting
+    runtime's window is provably out of view):
+      --interrupt-after S    Seconds of confirmed absence before escalation
+                             fires mid-flight; 0 (default) escalates on the
+                             first confirmed absence. Whole seconds >= 0.
+      --absent-after S       Seconds of zero on-screen hosting windows before
+                             that counts as absence (the gesture filter);
+                             default 20. Whole seconds >= 0.
+      --no-attention         No detection, no escalation: the panel behaves
+                             exactly as before for attention. Conflicts with
+                             --interrupt-after and --absent-after.
+
     Batch mode (section 12):
       --questions-file PATH  A JSON document of 1-10 questions, each with
                              title, text, 2-4 buttons, optional default
@@ -98,8 +127,9 @@ struct Question {
                              {"results":[{"index":0,"status":"answered","answer":"..."},...],
                              "stopped_at":N} on stdout.
 
-    Single-question output (stdout): the clicked button's text, or CANCELED,
-    GAVE-UP, or CLOSED.
+    Single-question output (stdout): the clicked button's text,
+    the typed answer string (Return with the answer field focused and
+    non-empty), or CANCELED, GAVE-UP, or CLOSED.
     Exit codes (both modes): 0 answered (batch: every question) | 2 canceled
     (Escape or single-question Cancel; batch: sequence stopped on Escape) |
     3 gave up (batch: a step's bound
@@ -114,14 +144,18 @@ struct Question {
     left above the drain origin.
 
     A panel appears over the current app, on the screen holding the pointer,
-    and never activates or steals focus. Parallel invocations cascade.
+    and never activates or steals focus. The one exception is attention
+    escalation (above): it activates ask-away and pulls the panel front only
+    on proven absence. Parallel invocations cascade.
     """
 
-    /// Parse argv into an invocation. Sequence files load here too, so every
-    /// error - usage or document - takes the single exit-1 path in main.
-    static func parseInvocation(_ arguments: [String]) throws(ParseError) -> Invocation {
+    /// Parse argv into an invocation plus attention configuration. Sequence
+    /// files load here too, so every error - usage or document - takes the
+    /// single exit-1 path in main.
+    static func parseInvocation(_ arguments: [String]) throws(ParseError) -> ParsedInvocation {
         var questionsFilePath: String?
         var singleFlagsUsed: [String] = []
+        var attentionFlagsUsed: [String] = []
 
         func noteSingle(_ flag: String) throws(Question.ParseError) {
             singleFlagsUsed.append(flag)
@@ -130,12 +164,24 @@ struct Question {
             }
         }
 
+        func wholeSeconds(_ flag: String, _ raw: String) throws(ParseError) -> Int {
+            guard let value = Int(raw), value >= 0 else {
+                throw flag == "--interrupt-after"
+                    ? .badInterruptAfter(raw)
+                    : .badAbsentAfter(raw)
+            }
+            return value
+        }
+
         var title: String?
         var text: String?
         var buttons: [String] = []
         var defaultOneBased: Int?
         var giveUpAfter: TimeInterval?
         var beep = true
+        var interruptAfter = AttentionConstants.interruptAfterDefaultSeconds
+        var absentAfter = AttentionConstants.absentAfterDefaultSeconds
+        var attentionDisabled = false
 
         var i = 0
         while i < arguments.count {
@@ -173,6 +219,28 @@ struct Question {
                 try noteSingle(arg)
                 beep = false
                 i += 1
+            case "--interrupt-after":
+                attentionFlagsUsed.append(arg)
+                if attentionDisabled {
+                    throw .conflict(with: "--no-attention", flag: arg)
+                }
+                guard i + 1 < arguments.count else { throw .missingValueFor(arg) }
+                interruptAfter = Double(try wholeSeconds(arg, arguments[i + 1]))
+                i += 2
+            case "--absent-after":
+                attentionFlagsUsed.append(arg)
+                if attentionDisabled {
+                    throw .conflict(with: "--no-attention", flag: arg)
+                }
+                guard i + 1 < arguments.count else { throw .missingValueFor(arg) }
+                absentAfter = Double(try wholeSeconds(arg, arguments[i + 1]))
+                i += 2
+            case "--no-attention":
+                if let first = attentionFlagsUsed.first {
+                    throw .conflict(with: arg, flag: first)
+                }
+                attentionDisabled = true
+                i += 1
             case "--questions-file":
                 guard i + 1 < arguments.count else { throw .missingValueFor(arg) }
                 if let first = singleFlagsUsed.first {
@@ -193,7 +261,13 @@ struct Question {
 
         if let path = questionsFilePath {
             do {
-                return .batch(try SequenceFile.load(path))
+                let questions = try SequenceFile.load(path)
+                return ParsedInvocation(
+                    content: .batch(questions),
+                    attention: attentionDisabled
+                        ? .disabled
+                        : AttentionConfig(enabled: true, absentAfter: absentAfter, interruptAfter: interruptAfter)
+                )
             } catch {
                 throw .documentError(String(describing: error))
             }
@@ -209,7 +283,7 @@ struct Question {
         guard defaultIndex >= 0, defaultIndex < buttons.count else {
             throw .badDefault(String(defaultOneBased!), count: buttons.count)
         }
-        return .single(Question(
+        let content = Invocation.single(Question(
             title: title,
             text: text,
             buttons: buttons,
@@ -217,5 +291,11 @@ struct Question {
             giveUpAfter: giveUpAfter,
             beep: beep
         ))
+        return ParsedInvocation(
+            content: content,
+            attention: attentionDisabled
+                ? .disabled
+                : AttentionConfig(enabled: true, absentAfter: absentAfter, interruptAfter: interruptAfter)
+        )
     }
 }

@@ -2,7 +2,7 @@
 
 A native macOS prompt that lets coding agents ask the human a question - and get the clicked answer back on stdout. Comes with a matching agent skill.
 
-One process, one question (or a whole sequence), one outcome. The agent invokes `ask-away` with a title, a body, and buttons; a dark neon-edged panel appears over whatever the human is doing, takes Return and Escape without stealing focus from the host app, and the answer comes back as the clicked button's text, `CANCELED`, `CLOSED`, or `GAVE-UP` - or, in batch mode, one line of JSON walking through every answer.
+One process, one question (or a whole sequence), one outcome. The agent invokes `ask-away` with a title, a body, and buttons; a dark neon-edged panel appears over whatever the human is doing, takes Return and Escape without stealing focus from the host app, and the answer comes back as the clicked button's text, a custom answer the human typed into the answer field, `CANCELED`, `CLOSED`, or `GAVE-UP` - or, in batch mode, one line of JSON walking through every answer.
 
 ![The ask-away panel](docs/panel.png)
 
@@ -16,6 +16,7 @@ Agents block on questions. Terminal-based prompts go unseen the moment the human
 - **One accent, one moment.** A cyan border, a mono metadata line, and the countdown ramp carry the urgency; the question body stays near-white and instantly readable. The panel is always dark.
 - **Machine contract.** stdout is the answer, the exit code is the outcome, and parallel invocations cascade instead of stacking blindly.
 - **Bounded asks.** `--give-up-after` drains a visible deadline; an expired ask returns `GAVE-UP` so the agent can take its documented fallback.
+- **Attention-aware escalation.** When the window hosting your agent is provably not on screen - other Space, minimized, detached tmux client, display asleep - the panel escalates instead of waiting patiently, and never steals focus on a guess.
 
 ## Install
 
@@ -48,7 +49,8 @@ install.sh --build-from-source --prefix /usr/local/bin --skill-dir ~/.agents/ski
 ask-away --title "repo: what this decides" \
          --text "One or two short sentences." \
          --buttons "Cancel" "Option A" "Option A + B" \
-         [--default N] [--give-up-after SECONDS] [--no-beep]
+         [--default N] [--give-up-after SECONDS] [--no-beep] \
+         [--absent-after SECONDS] [--interrupt-after SECONDS] [--no-attention]
 
 ask-away --questions-file questions.json   # or - to read stdin
 ```
@@ -60,14 +62,18 @@ ask-away --questions-file questions.json   # or - to read stdin
 | `--buttons B1 [B2] [B3]` | Two or three buttons, left to right in the order given. Rightmost is the recommended answer. |
 | `--default N` | 1-based button that takes Return and the filled accent style. Defaults to the LAST button. Position never changes; the fill marks the recommendation. |
 | `--give-up-after S` | Close unanswered after S seconds: the panel drains a countdown line and prints `GAVE-UP`. |
-| `--no-beep` | Suppress the single beep at appearance. |
-| `--questions-file PATH` | Walk 1-10 questions in one panel (batch mode). Mutually exclusive with every flag above. `-` reads the document from stdin to EOF. |
+| `--no-beep` | Suppress the appearance beep and the escalation triple-beep. |
+| `--absent-after S` | Seconds (default 20) the hosting window must be entirely off screen before "away" is confirmed and the panel may escalate. |
+| `--interrupt-after S` | Seconds "away" must hold before the panel escalates (default 0 = immediately). |
+| `--no-attention` | Disable attention detection and escalation entirely; the panel behaves exactly as without it. Conflicts with the two flags above (exit 1). Works with both invocation modes. |
+| `--questions-file PATH` | Walk 1-10 questions in one panel (batch mode). Mutually exclusive with every single-question flag above (`--title`, `--text`, `--buttons`, `--default`, `--give-up-after`, `--no-beep`); the attention flags above are invocation-level and work with it. `-` reads the document from stdin to EOF. |
 
 Single-question output:
 
 | stdout | exit | meaning |
 |---|---|---|
 | button text | 0 | the human chose |
+| typed string | 0 | the human typed a custom answer in the field - an answer like a button click |
 | `CANCELED` | 2 | Escape, or a button named "Cancel" was activated |
 | `GAVE-UP` | 3 | the bound expired unanswered |
 | `CLOSED` | 4 | the human dismissed the panel with Close; the decision is unanswered |
@@ -110,9 +116,10 @@ ask-away --questions-file /tmp/deploy-ask.json
 
 - Schema: 1-10 questions; `title` and `text` required; `buttons` is 2-4 strings; optional `default` (1-based, last button by default), `give_up_after` (seconds, absent = unbounded), `no_beep`. Unknown fields ignored; document capped at 256KiB.
 - Validation runs before anything renders: violations exit 1 naming the entry (`ask-away: questions[2].default must be 1..3, got 7`); malformed JSON exits 1 the same way. Nothing prints on stdout in any error case.
-- Output at sequence end: `{"results":[{"index":0,"status":"answered","answer":"Production"},...],"stopped_at":3}` - `status` is `answered`/`canceled`/`closed`/`gave-up`, entries appear for every question presented, and partial answers survive a mid-sequence stop.
+- Output at sequence end: `{"results":[{"index":0,"status":"answered","answer":"Production"},...],"stopped_at":3}` - `status` is `answered`/`canceled`/`closed`/`gave-up`, entries appear for every question presented, and partial answers survive a mid-sequence stop. An `answer` may be a clicked button's text or a string typed into the answer field; the two are shape-identical.
 - Exit codes: 0 all answered | 2 stopped on Escape | 3 stopped on a step's bound | 4 stopped on Close | 1 usage, parse, or validation.
 - Per step: the countdown and bound restart, the drain line resets instantly, and a step without a bound hides them. One beep per sequence, silenced if any question sets `no_beep`.
+- Attention (escalation when you are away, above) is computed per panel, not per step; the questions file gains no attention fields.
 - A button labeled `Cancel` answers only its own step; Escape stops the sequence. Up to 4 buttons wrap to a second right-aligned row without shrinking hit targets.
 - stdin note: `--questions-file -` reads to EOF before the panel appears - close the pipe or the ask blocks.
 
@@ -134,12 +141,13 @@ Parallel invocations cascade; one process per question.
 
 - Appears on the screen holding the pointer, horizontally centered, slightly above center; never repositions automatically. Drag the panel by its background.
 - Cascades +24pt down-right per concurrent panel (wraps after 6) so parallel agents stay readable.
-- Return triggers the default button; Escape cancels; no other keys are bound.
+- Return triggers the default button; Escape cancels; no other keys are bound. One exception: the answer field under the buttons. Typing anywhere lands in it; Return with text in it sends that text (exit 0 - an answer like a button click, even if it matches a button label); Return with it empty or unfocused triggers the default.
 - The top-right X dismisses the panel with `CLOSED` (exit 4). Closing supplies no approval: take no default or best-effort recommendation, and re-ask in the session UI. In a batch, prior answers stay intact and the closed step is appended with `status: "closed"`.
 - The countdown sits at the lower left, above the drain line's origin. The drain line and the seconds text share one color that ramps cyan -> amber -> red as the bound expires.
 - Body markup degrades safely: headings, tables, and thematic breaks render as plain paragraphs; code block content stays verbatim and scrolls internally past a screen-height-proportional cap.
 - VoiceOver: the panel exposes the title, the body reads as plain text, the countdown updates silently, and the default button cell drives Return. In a batch, each step change posts one "Question k of n" announcement.
 - Reduce Motion replaces the entrance, exit, and step-crossfade motion with fades.
+- **Attention.** The panel identifies the GUI application hosting the asking agent - whatever it is, by walking the process ancestry to the nearest window-owning app; no per-agent registry - and watches whether that app still owns an on-screen window. Visible-but-unfocused never escalates: while you can see the question where it appeared, the panel stays quiet and non-activating. Escalation requires proven absence: the hosting app has zero on-screen windows (other Space, minimized - held for `--absent-after` seconds, default 20, so Space-switch gestures never trip it), your tmux client is detached, or the display is asleep or the screensaver is running. Then it escalates: ask-away activates, the panel comes to the front above everything, and it triple-beeps - immediately at launch when the absence is already provable (detached client, sleeping display, running screensaver), or once "away" holds continuously for `--interrupt-after` seconds (default 0) mid-flight. A return to visibility cancels a pending escalation; an already-escalated panel stays on top until you answer or close it. A window hidden behind other windows still counts as visible on purpose (the safe direction: no escalation). Ambiguous conditions - SSH sessions, no local GUI ancestor, a multiplexer client that cannot be resolved - count as visible and never steal focus. The appearance beep follows the state (single when the host is visible or unknown, triple as part of escalation); `--no-beep` silences everything, and `--no-attention` disables the whole system for tests and CI. In batch mode attention is computed per panel, not per question.
 
 ## Skill installation
 
