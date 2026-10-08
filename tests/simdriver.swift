@@ -383,7 +383,7 @@ private enum Simulator {
                 FileHandle.standardError.write(Data("simdriver: mouse event creation failed\n".utf8))
                 exit(1)
             }
-            NSApp.postEvent(mouse, atStart: false)
+            panel.sendEvent(mouse)
         }
     }
 
@@ -456,6 +456,10 @@ private enum Simulator {
             "fieldFocused": field?.isFocused(in: panel) ?? false,
             "fieldValue": field?.liveStringValue ?? "",
             "hasEditor": field?.textField.currentEditor() != nil,
+            "dbgVisible": panel.isVisible,
+            "dbgOnScreen": field?.textField.window != nil,
+            "dbgFrame": NSStringFromRect(panel.frame),
+            "dbgWindowNumber": panel.windowNumber,
             "isEditorFocused": field.map { $0.isFocused(in: panel) } ?? false,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: payload),
@@ -489,7 +493,7 @@ private enum Simulator {
                 FileHandle.standardError.write(Data("simdriver: mouse event creation failed\n".utf8))
                 exit(1)
             }
-            NSApp.postEvent(mouse, atStart: false)
+            panel.sendEvent(mouse)
         }
     }
 

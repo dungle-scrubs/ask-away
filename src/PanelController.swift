@@ -496,6 +496,15 @@ final class PanelController {
     private var panel: AskPanel?
     private var root: PanelRootView?
     private var keyMonitor: Any?
+    /// Interaction marker (round-2 regression fix): the first key or
+    /// mouse event that reaches the panel stands down the initial-focus
+    /// pin for the rest of the invocation. The pin exists only to undo
+    /// the makeKey key-view steal at launch; once real interaction has
+    /// begun, focus belongs to the interaction - NSApp.currentEvent
+    /// sniffing in editingBegan cannot be relied on for posted or
+    /// deferred transitions.
+    private var interactionsStarted = false
+    private var mouseMonitor: Any?
     private var ticker: DrainTicker?
     private var deadline: Date?
     private var boundSeconds: Double = 1
@@ -812,6 +821,14 @@ final class PanelController {
 
         applyStepChrome(to: panel, buttons: buttons, question: steps[0].question)
 
+        // Mouse monitor: flags interaction start (pin stand-down) for
+        // click-driven focus - posted or real, either counts.
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            guard let self, !self.finished else { return event }
+            guard let panel = self.panel, event.window === panel else { return event }
+            self.interactionsStarted = true
+            return event
+        }
         // One local keyDown monitor owns the whole keyboard surface
         // (sections 10 and 13): Escape first, then Return routing, then the
         // fresh-panel Tab entry, then printable capture. It stays put across
@@ -820,13 +837,16 @@ final class PanelController {
             guard let self, !self.finished else { return event }
             guard let panel = self.panel, event.window === panel else { return event }
 
-            // The focus pin runs ahead of every key: if the makeKey key-view
-            // steal left the field holding focus the panel never asked for
-            // (section 13: initial focus is never the field), the first key
-            // event is exactly the deterministic moment to undo it - no
-            // timer, and a user-acquired focus flag keeps it from touching
-            // deliberate focus.
-            self.enforceInitialFocusPin()
+            // Any key event means interaction has begun: the initial-focus
+            // pin stands down from here on (see interactionsStarted).
+            self.interactionsStarted = true
+
+            // The focus pin runs ahead of the first key only: if the
+            // makeKey key-view steal left the field holding focus the panel
+            // never asked for (section 13: initial focus is never the
+            // field), the first key event is exactly the deterministic
+            // moment to undo it - no timer, and interaction start keeps it
+            // from touching deliberate focus afterward.
 
             // Escape before the field editor, whatever the focus.
             if event.keyCode == 53 {
@@ -1148,7 +1168,7 @@ final class PanelController {
     /// correction can remove deliberately acquired focus, and a deferred
     /// click transition is applied instead of overridden.
     private func enforceInitialFocusPin() {
-        guard !finished, let panel, let field = root?.answerField else { return }
+        guard !finished, !interactionsStarted, let panel, let field = root?.answerField else { return }
         if field.applyPendingBecomeKeyFocus(in: panel) { return }
         guard field.isFocused(in: panel), !field.userFocusAcquired else { return }
         let pinned = initialDefaultButton ?? currentDefaultButton
@@ -1398,6 +1418,10 @@ final class PanelController {
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
+        }
+        if let mouseMonitor {
+            NSEvent.removeMonitor(mouseMonitor)
+            self.mouseMonitor = nil
         }
         ticker?.stop()
         ticker = nil
